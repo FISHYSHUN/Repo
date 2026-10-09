@@ -87,38 +87,34 @@ local fullbright = lightPage:AddToggle("Fullbright", false, function(on)
 end)
 local clock = lightPage:AddSlider("Time of Day", 0, 24, defaultClock, function(v) mods:SetTimeOfDay(v) end)
 
--- SIDEBAR TAB: View (free cam + spectate) -------------------------------------
-local view = ui:AddTab("View", "View")
-
-local freePage = view:AddSubTab("Free Cam", "Free Cam")
-local freeCam = freePage:AddToggle("Free Cam", false, function(on)
+-- Free cam + spectate: added to the existing World > Camera page (no new tabs,
+-- so nothing here depends on icon names the Window module doesn't know about)
+cameraPage:AddSection("Free Cam")
+local freeCam = cameraPage:AddToggle("Free Cam", false, function(on)
 	mods:SetFreeCam(on)
 	ui:Notify("Free Cam " .. onOff(on))
 end)
-freePage:AddLabel("Hold Right Mouse to look. WASD move, E/Space up, Q down.")
-freePage:AddLabel("Shift = fast, Ctrl = slow. Your character is frozen meanwhile.")
-local freeSpeed = freePage:AddSlider("Cam Speed", 5, 300, 50, function(v) mods:SetFreeCamSpeed(v) end)
-local freeSens = freePage:AddSlider("Look Sensitivity %", 10, 100, 30, function(v) mods:SetFreeCamSensitivity(v / 100) end)
-freePage:AddButton("Return To My Character", function() mods:StopCamera() end)
+cameraPage:AddLabel("Hold Right Mouse to look. WASD move, E/Space up, Q down, Shift fast, Ctrl slow.")
+local freeSpeed = cameraPage:AddSlider("Cam Speed", 5, 300, 50, function(v) mods:SetFreeCamSpeed(v) end)
+local freeSens = cameraPage:AddSlider("Look Sensitivity %", 10, 100, 30, function(v) mods:SetFreeCamSensitivity(v / 100) end)
 
-local specPage = view:AddSubTab("Spectate", "Spectate")
-local specLabel = specPage:AddLabel("Camera: Normal")
-
-specPage:AddButton("Previous Player", function()
+cameraPage:AddSection("Spectate")
+local specLabel = cameraPage:AddLabel("Camera: Normal")
+cameraPage:AddButton("Previous Player", function()
 	local p = mods:SpectatePrev()
 	ui:Notify(p and ("Spectating " .. p.DisplayName) or "No other players")
 end)
-specPage:AddButton("Next Player", function()
+cameraPage:AddButton("Next Player", function()
 	local p = mods:SpectateNext()
 	ui:Notify(p and ("Spectating " .. p.DisplayName) or "No other players")
 end)
-specPage:AddTextBox("Spectate Player", "", function(text)
-	if text == "" then return end
+cameraPage:AddTextBox("Spectate Player", "Player name", function(text)
+	if text == "" or text == "Player name" then return end
 	local p = mods:FindPlayer(text)
 	if p then mods:Spectate(p) else ui:Notify("Player not found") end
 end)
-specPage:AddToggle("First-Person View (POV)", false, function(on) mods:SetSpectatePOV(on) end)
-specPage:AddButton("Free Cam Around This Player", function()
+cameraPage:AddToggle("First-Person View (POV)", false, function(on) mods:SetSpectatePOV(on) end)
+cameraPage:AddButton("Free Cam Around This Player", function()
 	local target = mods.SpectateTarget
 	if target and mods:FocusFreeCam(target) then
 		ui:Notify("Free Cam focused on " .. target.DisplayName)
@@ -126,7 +122,7 @@ specPage:AddButton("Free Cam Around This Player", function()
 		ui:Notify("Spectate someone first")
 	end
 end)
-specPage:AddButton("Stop (Back To Me)", function() mods:StopCamera() end)
+cameraPage:AddButton("Stop (Back To Me)", function() mods:StopCamera() end)
 
 -- keep the UI in sync when the camera changes (hotkeys, player leaving, Reset...)
 mods.OnCameraChanged = function(mode)
