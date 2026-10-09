@@ -82,6 +82,35 @@ local function setEntry(key, value)
 	pcall(entry.apply, value)
 end
 
+-- Always on top ---------------------------------------------------------------
+-- Max DisplayOrder + (when possible) parented to gethui()/CoreGui so game GUIs can't cover
+-- the menu. A watcher puts the order back if a game script changes it.
+local topmostConn
+local originalOrder = (ui.Gui and ui.Gui:IsA("ScreenGui")) and ui.Gui.DisplayOrder or 0
+
+local function setTopmost(on)
+	local gui = ui.Gui
+	if not (gui and gui:IsA("ScreenGui")) then return end
+	if topmostConn then
+		topmostConn:Disconnect()
+		topmostConn = nil
+	end
+	if on then
+		gui.DisplayOrder = 2147483647
+		pcall(function() gui.ResetOnSpawn = false end)
+		local ok, host = pcall(function() return (gethui and gethui()) or game:GetService("CoreGui") end)
+		if ok and host and gui.Parent ~= host then
+			pcall(function() gui.Parent = host end)
+		end
+		topmostConn = gui:GetPropertyChangedSignal("DisplayOrder"):Connect(function()
+			if gui.DisplayOrder ~= 2147483647 then gui.DisplayOrder = 2147483647 end
+		end)
+	else
+		gui.DisplayOrder = originalOrder
+	end
+end
+setTopmost(true)
+
 -- SIDEBAR TAB: Movement ------------------------------------------------------
 local movement = ui:AddTab("Movement", "Movement")
 
@@ -268,6 +297,7 @@ dockPage:AddSection("Position (click to change)")
 dockPage:AddDropdown("Dock Side", ui:GetDockSides(), "Left", function(side) ui:SetDockSide(side) end)
 dockPage:AddToggle("Draggable (along the edge)", true, function(on) ui:SetDraggable(on) end)
 dockPage:AddButton("Reset Position", function() ui:ResetPosition() end)
+toggle(dockPage, "Always on top", "alwaysOnTop", true, function(on) setTopmost(on) end)
 dockPage:AddSection("Bar")
 dockPage:AddSlider("Bar Thickness", 36, 100, 56, function(v) ui:SetBarSize(v) end)
 dockPage:AddDropdown("Title Direction", ui:GetTitleRotations(), "Auto", function(mode) ui:SetTitleRotation(mode) end)
@@ -467,6 +497,7 @@ return {
 	Mods = mods,
 	Destroy = function()
 		hotkeyConn:Disconnect()
+		if topmostConn then topmostConn:Disconnect() end
 		pcall(function() visuals:Destroy() end)
 		mods:Destroy()
 		ui:Destroy()
