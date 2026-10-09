@@ -6,7 +6,7 @@
 -- `import` function (so modules never need `require(script.X)`). Every module is its own function,
 -- so none of them comes close to the per-function local / upvalue limits.
 
-local REPO_BASE = "https://raw.githubusercontent.com/USER/REPO/main/" -- <-- EDIT: your user / repo / branch
+local REPO_BASE = "https://raw.githubusercontent.com/FISHYSHUN/Repo/main/" -- <-- EDIT: your user / repo / branch
 
 local env = (getgenv and getgenv()) or _G
 local base = env.PlayerMenuBase or REPO_BASE -- optional override: getgenv().PlayerMenuBase = "https://.../"
