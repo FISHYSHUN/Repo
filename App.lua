@@ -7,6 +7,8 @@ local UserInputService = game:GetService("UserInputService")
 
 local GuiUI = import("Window")
 local PlayerMods = import("PlayerMods")
+local Visuals = import("Visuals")
+local Config = import("Config")
 
 local ui = GuiUI.new({
 	Title = "Player Menu",
@@ -27,6 +29,7 @@ local ui = GuiUI.new({
 })
 
 local mods = PlayerMods.new()
+local visuals = Visuals.new()
 
 local defaultGravity = math.round(mods.Defaults.Gravity)
 local defaultFov = math.clamp(math.round(mods.Defaults.FOV), 40, 120)
@@ -35,19 +38,63 @@ local defaultZoom = math.clamp(math.round(mods.Defaults.MaxZoom), 10, 1000)
 
 local function onOff(on) return on and "ON" or "OFF" end
 
+-- Config registry ------------------------------------------------------------
+-- Every control created through these helpers is remembered, so it can be saved to
+-- and restored from a config. resetApply = also re-apply the default on "Reset All".
+local registry = {}
+
+local function register(key, default, apply, resetApply)
+	local entry = { value = default, default = default, apply = apply, resetApply = resetApply }
+	registry[key] = entry
+	return entry
+end
+
+local function slider(page, label, key, min, max, default, apply, resetApply)
+	local entry = register(key, default, apply, resetApply)
+	entry.control = page:AddSlider(label, min, max, default, function(v) entry.value = v; apply(v) end)
+	return entry.control
+end
+
+local function toggle(page, label, key, default, apply, resetApply)
+	local entry = register(key, default, apply, resetApply)
+	entry.control = page:AddToggle(label, default, function(on) entry.value = on; apply(on) end)
+	return entry.control
+end
+
+local function dropdown(page, label, key, list, default, apply, resetApply)
+	local entry = register(key, default, apply, resetApply)
+	entry.control = page:AddDropdown(label, list, default, function(v) entry.value = v; apply(v) end)
+	return entry.control
+end
+
+local function color(page, label, key, default, apply, resetApply)
+	local entry = register(key, default, apply, resetApply)
+	entry.control = page:AddColorPicker(label, default, function(c) entry.value = c; apply(c) end)
+	return entry.control
+end
+
+-- set a registered control from code (hotkeys, config load)
+local function setEntry(key, value)
+	local entry = registry[key]
+	if not entry then return end
+	entry.value = value
+	pcall(entry.control.Set, value)
+	pcall(entry.apply, value)
+end
+
 -- SIDEBAR TAB: Movement ------------------------------------------------------
 local movement = ui:AddTab("Movement", "Movement")
 
 local speedPage = movement:AddSubTab("Speed", "Speed")
-local walk = speedPage:AddSlider("Walk Speed", 16, 150, 16, function(v) mods:SetWalkSpeed(v) end)
-local jump = speedPage:AddSlider("Jump Power", 50, 250, 50, function(v) mods:SetJumpPower(v) end)
-local hip = speedPage:AddSlider("Hip Height", 0, 20, 2, function(v) mods:SetHipHeight(v) end)
+local walk = slider(speedPage, "Walk Speed", "walkSpeed", 16, 150, 16, function(v) mods:SetWalkSpeed(v) end)
+local jump = slider(speedPage, "Jump Power", "jumpPower", 50, 250, 50, function(v) mods:SetJumpPower(v) end)
+local hip = slider(speedPage, "Hip Height", "hipHeight", 0, 20, 2, function(v) mods:SetHipHeight(v) end)
 speedPage:AddSection("Sprint (hold Left Shift)")
 local sprint = speedPage:AddToggle("Sprint", false, function(on)
 	mods:SetSprint(on)
 	ui:Notify("Sprint " .. onOff(on))
 end)
-local sprintMul = speedPage:AddSlider("Sprint Speed %", 110, 300, 160, function(v) mods:SetSprintMultiplier(v / 100) end)
+local sprintMul = slider(speedPage, "Sprint Speed %", "sprintSpeed", 110, 300, 160, function(v) mods:SetSprintMultiplier(v / 100) end)
 
 local flightPage = movement:AddSubTab("Flight", "Flight")
 local fly = flightPage:AddToggle("Fly", false, function(on)
@@ -55,7 +102,7 @@ local fly = flightPage:AddToggle("Fly", false, function(on)
 	ui:Notify("Fly " .. onOff(on))
 end)
 flightPage:AddLabel("Fly: WASD to move, Space up, Ctrl down.")
-local flySpeed = flightPage:AddSlider("Fly Speed", 20, 200, 60, function(v) mods:SetFlySpeed(v) end)
+local flySpeed = slider(flightPage, "Fly Speed", "flySpeed", 20, 200, 60, function(v) mods:SetFlySpeed(v) end)
 local noclip = flightPage:AddToggle("Noclip", false, function(on)
 	mods:SetNoclip(on)
 	ui:Notify("Noclip " .. onOff(on))
@@ -74,18 +121,18 @@ extrasPage:AddButton("Respawn Character", function() mods:Respawn() end)
 local world = ui:AddTab("World", "World")
 
 local physicsPage = world:AddSubTab("Physics", "Physics")
-local gravity = physicsPage:AddSlider("Gravity", 0, 400, defaultGravity, function(v) mods:SetGravity(v) end)
+local gravity = slider(physicsPage, "Gravity", "gravity", 0, 400, defaultGravity, function(v) mods:SetGravity(v) end)
 
 local cameraPage = world:AddSubTab("Camera", "Camera")
-local fov = cameraPage:AddSlider("Field of View", 40, 120, defaultFov, function(v) mods:SetFOV(v) end)
-local zoom = cameraPage:AddSlider("Max Zoom", 10, 1000, defaultZoom, function(v) mods:SetMaxZoom(v) end)
+local fov = slider(cameraPage, "Field of View", "fov", 40, 120, defaultFov, function(v) mods:SetFOV(v) end)
+local zoom = slider(cameraPage, "Max Zoom", "maxZoom", 10, 1000, defaultZoom, function(v) mods:SetMaxZoom(v) end)
 
 local lightPage = world:AddSubTab("Lighting", "Lighting")
 local fullbright = lightPage:AddToggle("Fullbright", false, function(on)
 	mods:SetFullbright(on)
 	ui:Notify("Fullbright " .. onOff(on))
 end)
-local clock = lightPage:AddSlider("Time of Day", 0, 24, defaultClock, function(v) mods:SetTimeOfDay(v) end)
+local clock = slider(lightPage, "Time of Day", "timeOfDay", 0, 24, defaultClock, function(v) mods:SetTimeOfDay(v) end)
 
 -- Free cam + spectate: added to the existing World > Camera page (no new tabs,
 -- so nothing here depends on icon names the Window module doesn't know about)
@@ -95,8 +142,8 @@ local freeCam = cameraPage:AddToggle("Free Cam", false, function(on)
 	ui:Notify("Free Cam " .. onOff(on))
 end)
 cameraPage:AddLabel("Hold Right Mouse to look. WASD move, E/Space up, Q down, Shift fast, Ctrl slow.")
-local freeSpeed = cameraPage:AddSlider("Cam Speed", 5, 300, 50, function(v) mods:SetFreeCamSpeed(v) end)
-local freeSens = cameraPage:AddSlider("Look Sensitivity %", 10, 100, 30, function(v) mods:SetFreeCamSensitivity(v / 100) end)
+local freeSpeed = slider(cameraPage, "Cam Speed", "freeCamSpeed", 5, 300, 50, function(v) mods:SetFreeCamSpeed(v) end)
+local freeSens = slider(cameraPage, "Look Sensitivity %", "freeCamSens", 10, 100, 30, function(v) mods:SetFreeCamSensitivity(v / 100) end)
 
 cameraPage:AddSection("Spectate")
 local specLabel = cameraPage:AddLabel("Camera: Normal")
@@ -129,6 +176,53 @@ mods.OnCameraChanged = function(mode)
 	specLabel.Text = mods:GetCameraStatus()
 	freeCam.Set(mode == "Free")
 end
+
+-- SIDEBAR TAB: Visuals (ESP + camera tracking) --------------------------------
+-- If the Window module refuses a new tab / sub-tab name, these fall back to existing ones
+-- instead of killing the whole menu.
+local function safeTab(name)
+	local ok, tab = pcall(function() return ui:AddTab(name, name) end)
+	return ok and tab or world
+end
+local function safeSub(tab, name, fallback)
+	local ok, page = pcall(function() return tab:AddSubTab(name, name) end)
+	return ok and page or fallback
+end
+
+local visualsTab = safeTab("Visuals")
+
+local espPage = safeSub(visualsTab, "ESP", cameraPage)
+espPage:AddSection("Player ESP")
+toggle(espPage, "ESP", "espEnabled", false, function(on) visuals:SetEnabled(on) end, true)
+toggle(espPage, "Chams (highlight)", "espChams", true, function(on) visuals:Set("Chams", on) end, true)
+toggle(espPage, "Name Tags", "espNames", true, function(on) visuals:Set("Names", on) end, true)
+toggle(espPage, "Distance", "espDistance", true, function(on) visuals:Set("Distance", on) end, true)
+toggle(espPage, "Health", "espHealth", true, function(on) visuals:Set("Health", on) end, true)
+toggle(espPage, "Tracers", "espTracers", false, function(on) visuals:Set("Tracers", on) end, true)
+toggle(espPage, "Team Check (hide teammates)", "espTeamCheck", true, function(on) visuals:Set("TeamCheck", on) end, true)
+toggle(espPage, "Use Team Colors", "espTeamColors", false, function(on) visuals:Set("TeamColors", on) end, true)
+slider(espPage, "Max Distance", "espMaxDist", 100, 5000, 2000, function(v) visuals:Set("MaxDistance", v) end, true)
+slider(espPage, "Fill Transparency %", "espFillTrans", 0, 100, 60, function(v) visuals:Set("FillTransparency", v / 100) end, true)
+slider(espPage, "Text Size", "espTextSize", 10, 24, 14, function(v) visuals:Set("TextSize", v) end, true)
+espPage:AddSection("Colors")
+color(espPage, "Fill Color", "espFillColor", Color3.fromRGB(255, 60, 60), function(c) visuals:Set("FillColor", c) end, true)
+color(espPage, "Outline Color", "espOutlineColor", Color3.fromRGB(255, 255, 255), function(c) visuals:Set("OutlineColor", c) end, true)
+espPage:AddLabel("Roblox draws at most 31 highlights at once. Tracers need an executor with Drawing support.")
+
+local trackPage = safeSub(visualsTab, "Tracking", cameraPage)
+trackPage:AddSection("Camera Tracking")
+toggle(trackPage, "Camera Tracking", "trackEnabled", false, function(on) mods:SetTracking(on) end, true)
+dropdown(trackPage, "Activate", "trackMode", { "Hold Right Mouse", "Hold Left Mouse", "Always" }, "Hold Right Mouse",
+	function(v) mods:SetTrackOption("Mode", v) end, true)
+dropdown(trackPage, "Target Part", "trackPart", { "Head", "HumanoidRootPart", "UpperTorso" }, "Head",
+	function(v) mods:SetTrackOption("Part", v) end, true)
+slider(trackPage, "Tracking Speed", "trackSpeed", 1, 40, 12, function(v) mods:SetTrackOption("Speed", v) end, true)
+slider(trackPage, "Tracking FOV (px)", "trackFov", 30, 800, 250, function(v) mods:SetTrackOption("FOV", v) end, true)
+toggle(trackPage, "Show FOV Circle", "trackShowFov", false, function(on) mods:SetTrackOption("ShowFOV", on) end, true)
+toggle(trackPage, "Team Check", "trackTeamCheck", true, function(on) mods:SetTrackOption("TeamCheck", on) end, true)
+toggle(trackPage, "Wall Check", "trackWallCheck", false, function(on) mods:SetTrackOption("WallCheck", on) end, true)
+trackPage:AddLabel("Turns the camera toward the player closest to your cursor inside the circle.")
+trackPage:AddLabel("Lower speed = smoother. Paused while free cam / spectate is on.")
 
 -- SIDEBAR TAB: Info ----------------------------------------------------------
 local info = ui:AddTab("Info", "Info")
@@ -218,6 +312,72 @@ sizePage:AddDropdown("Page Slide", { "Auto", "LeftToRight", "RightToLeft" }, "Au
 	ui:SetSlideMode(mode)
 end)
 
+-- CONFIGS: save / load every registered setting to a file in your executor workspace
+local function collect()
+	local values = {}
+	for key, entry in registry do
+		local v = entry.value
+		if typeof(v) == "Color3" then
+			v = {
+				r = math.floor(v.R * 255 + 0.5),
+				g = math.floor(v.G * 255 + 0.5),
+				b = math.floor(v.B * 255 + 0.5),
+				color = true,
+			}
+		end
+		values[key] = v
+	end
+	return { version = 1, values = values }
+end
+
+local function applyConfig(data)
+	if type(data) ~= "table" or type(data.values) ~= "table" then return 0 end
+	local count = 0
+	for key, v in data.values do
+		local entry = registry[key]
+		if entry then
+			if type(v) == "table" and v.color then v = Color3.fromRGB(v.r, v.g, v.b) end
+			-- skip no-op writes so untouched sliders don't override the game's own values
+			if v ~= entry.default or entry.value ~= entry.default or entry.resetApply then
+				setEntry(key, v)
+			end
+			count += 1
+		end
+	end
+	return count
+end
+
+local cfgPage = safeSub(settings, "Configs", dockPage)
+local cfgName = "default"
+cfgPage:AddSection("Save and load your settings")
+cfgPage:AddTextBox("Config Name", "default", function(text)
+	if text ~= "" then cfgName = text end
+end)
+cfgPage:AddButton("Save Config", function()
+	local ok, err = Config.Save(cfgName, collect())
+	ui:Notify(ok and ("Saved '" .. cfgName .. "'") or ("Save failed: " .. tostring(err)))
+end)
+cfgPage:AddButton("Load Config", function()
+	local data, err = Config.Load(cfgName)
+	if data then
+		ui:Notify("Loaded '" .. cfgName .. "' (" .. applyConfig(data) .. " settings)")
+	else
+		ui:Notify("Load failed: " .. tostring(err))
+	end
+end)
+cfgPage:AddButton("Delete Config", function()
+	ui:Notify(Config.Delete(cfgName) and ("Deleted '" .. cfgName .. "'") or "Nothing to delete")
+end)
+cfgPage:AddButton("List Configs", function()
+	local names = Config.List()
+	ui:Notify(#names > 0 and ("Configs: " .. table.concat(names, ", ")) or "No saved configs")
+end)
+cfgPage:AddToggle("Auto-load this config on start", false, function(on)
+	Config.SetAutoload(on and cfgName or nil)
+	ui:Notify(on and ("Auto-load: " .. cfgName) or "Auto-load off")
+end)
+cfgPage:AddLabel("Files: workspace/PlayerMenu/configs/<name>.json")
+
 -- KEYS: hotkeys (click a button, then press a key; Esc cancels, Backspace clears)
 local keysPage = settings:AddSubTab("Keys", "Keys")
 keysPage:AddSection("Click a button, then press a key")
@@ -227,6 +387,8 @@ local freeCamKey = keysPage:AddKeybind("Free Cam Key", Enum.KeyCode.G)
 local specPrevKey = keysPage:AddKeybind("Spectate Previous", Enum.KeyCode.LeftBracket)
 local specNextKey = keysPage:AddKeybind("Spectate Next", Enum.KeyCode.RightBracket)
 local camStopKey = keysPage:AddKeybind("Stop Camera", Enum.KeyCode.End)
+local espKey = keysPage:AddKeybind("ESP Key", Enum.KeyCode.Z)
+local trackKey = keysPage:AddKeybind("Tracking Key", Enum.KeyCode.T)
 keysPage:AddKeybind("Minimize Key", nil, function(key) ui:SetMinimizeKey(key) end)
 keysPage:AddLabel("Esc cancels, Backspace clears the bind.")
 
@@ -256,6 +418,14 @@ local hotkeyConn = UserInputService.InputBegan:Connect(function(input, processed
 	elseif key == camStopKey.Get() then
 		mods:StopCamera()
 		ui:Notify("Camera reset")
+	elseif key == espKey.Get() then
+		local on = not registry.espEnabled.value
+		setEntry("espEnabled", on)
+		ui:Notify("ESP " .. onOff(on))
+	elseif key == trackKey.Get() then
+		local on = not registry.trackEnabled.value
+		setEntry("trackEnabled", on)
+		ui:Notify("Tracking " .. onOff(on))
 	end
 end)
 
@@ -269,8 +439,27 @@ extrasPage:AddButton("Reset All Modifiers", function()
 	gravity.Set(defaultGravity); fov.Set(defaultFov); zoom.Set(defaultZoom)
 	fullbright.Set(false); clock.Set(defaultClock)
 	freeCam.Set(false); specLabel.Text = mods:GetCameraStatus()
+	for _, entry in registry do
+		if entry.resetApply then
+			entry.value = entry.default
+			pcall(entry.control.Set, entry.default)
+			pcall(entry.apply, entry.default)
+		end
+	end
 	ui:Notify("Everything reset")
 end)
+
+-- apply the auto-load config (if one was set) once everything is built
+do
+	local auto = Config.GetAutoload()
+	if auto then
+		local data = Config.Load(auto)
+		if data then
+			applyConfig(data)
+			ui:Notify("Auto-loaded '" .. auto .. "'")
+		end
+	end
+end
 
 -- handle returned to the loader: running the loader again calls this first
 return {
@@ -278,6 +467,7 @@ return {
 	Mods = mods,
 	Destroy = function()
 		hotkeyConn:Disconnect()
+		pcall(function() visuals:Destroy() end)
 		mods:Destroy()
 		ui:Destroy()
 	end,

@@ -52,6 +52,20 @@ function PlayerMods.new()
 	self.SpectatePOV = false
 	self.OnCameraChanged = nil -- optional callback(mode, target, pov) for the UI
 
+	-- camera tracking: smoothly turns the camera toward the player nearest your cursor
+	self.Track = {
+		Enabled = false,
+		Mode = "Hold Right Mouse", -- "Hold Right Mouse" | "Hold Left Mouse" | "Always"
+		Part = "Head",
+		Speed = 12, -- higher = snappier, lower = smoother
+		FOV = 250, -- pixel radius around the cursor that can pick a target
+		ShowFOV = false,
+		TeamCheck = true,
+		WallCheck = false,
+	}
+	self._trackTarget = nil
+	self._fovCircle = nil
+
 	self._sprinting = false
 	self._fps = 60
 	self._conns = {}
@@ -691,9 +705,140 @@ end
 function PlayerMods:SpectateNext() return self:SpectateStep(1) end
 function PlayerMods:SpectatePrev() return self:SpectateStep(-1) end
 
+-- Camera tracking -------------------------------------------------------------------
+-- While active, the camera smoothly turns toward the player closest to your cursor
+-- (inside the FOV circle). The target stays locked until you release the key.
+-- Paused automatically while free cam / spectate is on.
+local TRACK_STEP = "PlayerModsTrack"
+local HAS_DRAWING = Drawing ~= nil and Drawing.new ~= nil
+
+function PlayerMods:SetTrackOption(key, value)
+	self.Track[key] = value
+	if key == "ShowFOV" and not value then self:_hideFovCircle() end
+	if key == "Part" then self._trackTarget = nil end
+end
+
+function PlayerMods:SetTracking(enabled)
+	self.Track.Enabled = enabled
+	unbind(TRACK_STEP)
+	self._trackTarget = nil
+	if enabled then
+		RunService:BindToRenderStep(TRACK_STEP, CAMERA_PRIORITY + 1, function(dt)
+			self:_stepTrack(dt)
+		end)
+	else
+		self:_hideFovCircle()
+	end
+end
+
+function PlayerMods:GetTrackTarget()
+	return self._trackTarget
+end
+
+function PlayerMods:_trackPart(player)
+	local char = player.Character
+	if not char then return nil end
+	return char:FindFirstChild(self.Track.Part) or char:FindFirstChild("HumanoidRootPart")
+end
+
+function PlayerMods:_trackable(player)
+	if player == self.Player then return false end
+	local char = player.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if not hum or hum.Health <= 0 then return false end
+	if self.Track.TeamCheck and player.Team ~= nil and player.Team == self.Player.Team then
+		return false
+	end
+	return true
+end
+
+function PlayerMods:_lineClear(cam, part)
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = { self.Player.Character, part.Parent }
+	local origin = cam.CFrame.Position
+	return Workspace:Raycast(origin, part.Position - origin, params) == nil
+end
+
+function PlayerMods:_pickTrackTarget(cam, mouse)
+	local best, bestDist
+	for _, p in Players:GetPlayers() do
+		if self:_trackable(p) then
+			local part = self:_trackPart(p)
+			if part then
+				local v, onScreen = cam:WorldToViewportPoint(part.Position)
+				if onScreen then
+					local d = (Vector2.new(v.X, v.Y) - mouse).Magnitude
+					if d <= self.Track.FOV and (not bestDist or d < bestDist)
+						and (not self.Track.WallCheck or self:_lineClear(cam, part)) then
+						best, bestDist = p, d
+					end
+				end
+			end
+		end
+	end
+	return best
+end
+
+function PlayerMods:_hideFovCircle()
+	if self._fovCircle then self._fovCircle.Visible = false end
+end
+
+function PlayerMods:_drawFovCircle(mouse)
+	if not (self.Track.ShowFOV and HAS_DRAWING) then
+		self:_hideFovCircle()
+		return
+	end
+	if not self._fovCircle then
+		local c = Drawing.new("Circle")
+		c.Thickness = 1
+		c.NumSides = 64
+		c.Filled = false
+		c.Color = Color3.new(1, 1, 1)
+		self._fovCircle = c
+	end
+	self._fovCircle.Position = mouse
+	self._fovCircle.Radius = self.Track.FOV
+	self._fovCircle.Visible = true
+end
+
+function PlayerMods:_stepTrack(dt)
+	local t = self.Track
+	local cam = camera()
+	if not (t.Enabled and cam) or self.CamMode ~= "Off" then
+		self._trackTarget = nil
+		self:_hideFovCircle()
+		return
+	end
+
+	local mouse = UserInputService:GetMouseLocation()
+	self:_drawFovCircle(mouse)
+
+	local active = t.Mode == "Always"
+		or (t.Mode == "Hold Right Mouse" and UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2))
+		or (t.Mode == "Hold Left Mouse" and UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1))
+	if not active or self:_typing() then
+		self._trackTarget = nil -- released: next press picks a fresh target
+		return
+	end
+
+	local target = self._trackTarget
+	if not (target and self:_trackable(target) and self:_trackPart(target)) then
+		target = self:_pickTrackTarget(cam, mouse)
+		self._trackTarget = target
+	end
+	if not target then return end
+
+	local part = self:_trackPart(target)
+	local goal = CFrame.lookAt(cam.CFrame.Position, part.Position)
+	local alpha = 1 - math.exp(-dt * t.Speed) -- frame-rate independent smoothing
+	cam.CFrame = cam.CFrame:Lerp(goal, alpha)
+end
+
 -- Reset everything back to normal ------------------------------------------------
 function PlayerMods:Reset()
 	self:StopCamera()
+	self:SetTracking(false)
 	self:SetFly(false)
 	self:SetNoclip(false)
 	self:SetFullbright(false)
@@ -720,6 +865,10 @@ end
 
 function PlayerMods:Destroy()
 	self:Reset()
+	if self._fovCircle then
+		pcall(function() self._fovCircle:Remove() end)
+		self._fovCircle = nil
+	end
 	for _, conn in self._conns do conn:Disconnect() end
 	table.clear(self._conns)
 end
