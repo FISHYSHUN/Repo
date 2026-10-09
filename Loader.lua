@@ -1,15 +1,16 @@
--- Loader.lua : the ONLY file you execute.
+-- Loader.lua : run this ONE file. It loads every module from your executor's workspace folder
+-- (no internet, no GitHub).
 --
---   loadstring(game:HttpGet("https://raw.githubusercontent.com/USER/REPO/main/Loader.lua"))()
---
--- It downloads every file in /modules on demand, runs each one as its own chunk and hands it an
--- `import` function (so modules never need `require(script.X)`). Every module is its own function,
--- so none of them comes close to the per-function local / upvalue limits.
+-- Setup:
+--   1. In your executor's workspace folder, create a folder called  PlayerMenu
+--   2. Put ALL the .lua files in it: App, Behavior, Controls, Dock, Loader, PlayerMods, Skins,
+--      Theme, Toolkit, Window   (flat, no sub-folders; Window.lua etc. exactly as in your repo)
+--   3. Execute:
+--        loadstring(readfile("PlayerMenu/Loader.lua"))()
 
-local REPO_BASE = "https://raw.githubusercontent.com/FISHYSHUN/Repo/main/" -- <-- EDIT: your user / repo / branch
+local FOLDER = "PlayerMenu"
 
 local env = (getgenv and getgenv()) or _G
-local base = env.PlayerMenuBase or REPO_BASE -- optional override: getgenv().PlayerMenuBase = "https://.../"
 
 -- running it twice replaces the old menu instead of stacking a second one
 if env.PlayerMenu then
@@ -22,13 +23,12 @@ local cache = {}
 local function import(name)
 	if cache[name] ~= nil then return cache[name] end
 
-	local url = base .. "modules/" .. name .. ".lua"
-	local ok, source = pcall(function() return game:HttpGet(url) end)
-	if not ok or type(source) ~= "string" or source == "" then
-		error(("[PlayerMenu] could not download '%s' (%s)"):format(name, url), 2)
+	local path = FOLDER .. "/" .. name .. ".lua"
+	if not (isfile and isfile(path)) then
+		error(("[PlayerMenu] missing file '%s' (put it in your executor's workspace folder)"):format(path), 2)
 	end
 
-	local fn, err = loadstring(source, "=" .. name)
+	local fn, err = loadstring(readfile(path), "=" .. name)
 	if not fn then
 		error(("[PlayerMenu] syntax error in '%s': %s"):format(name, tostring(err)), 2)
 	end
