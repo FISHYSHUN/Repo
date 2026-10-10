@@ -84,11 +84,8 @@ return function(GuiUI)
 		local p = UDim.new(0, hz and 5 or 8)
 		local pad = self.TabListPad
 		pad.PaddingTop, pad.PaddingBottom, pad.PaddingLeft, pad.PaddingRight = p, p, UDim.new(0, 8), UDim.new(0, 8)
-		for _, tab in self.Tabs do
-			if not tab.IsBottom then
-				tab.Button.Holder.Size = hz and UDim2.new(0, S.TabIcon, 1, 0) or UDim2.new(1, 0, 0, S.Tab)
-			end
-		end
+		self.TabListLayout.Padding = UDim.new(0, self.TabGap)
+		self:_refreshTabLabels()
 	end
 
 	function GuiUI:_openPos()

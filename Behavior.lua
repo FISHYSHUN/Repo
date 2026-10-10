@@ -155,7 +155,9 @@ return function(GuiUI)
 	-- NOTIFICATIONS
 	---------------------------------------------------------------------------
 	function GuiUI:Notify(text, duration)
-		duration = duration or 2.5
+		if self.Notifications == false then return end
+		duration = (duration or 2.5) * (self.ToastScale or 1)
+		local dir = self.ToastDir or 320
 		self._toastCount += 1
 		self._toasts = self._toasts or {}
 		local holder = New("Frame", {
@@ -163,7 +165,7 @@ return function(GuiUI)
 			LayoutOrder = self._toastCount, Parent = self.ToastArea,
 		})
 		local slide = New("Frame", {
-			BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), Position = UDim2.fromOffset(320, 0), Parent = holder,
+			BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), Position = UDim2.fromOffset(dir, 0), Parent = holder,
 		})
 		local _, face = Shadowed(slide, "ToastBody", "Frame", UDim2.new(), UDim2.fromScale(1, 1), "Window", 3, nil, "toast")
 		-- accent bar is inset from the edges so it never pokes out of rounded corners
@@ -174,7 +176,7 @@ return function(GuiUI)
 		Bind(bar, "BackgroundColor3", "Active")
 		Label(face, text, { Align = Enum.TextXAlignment.Left, TextSize = Theme.FontSize.Small, PadX = 18 })
 
-		-- leaving: slide out to the right, then the space it used folds shut so the others glide down
+		-- leaving: slide out to the screen edge it came from, then the space it used folds shut so the others glide down
 		local toast = {}
 		function toast.Dismiss()
 			if toast.Done then return end
@@ -182,7 +184,7 @@ return function(GuiUI)
 			local i = table.find(self._toasts, toast)
 			if i then table.remove(self._toasts, i) end
 			if holder.Parent == nil then return end
-			local out = Anim.Tween(slide, 0.25, { Position = UDim2.fromOffset(320, 0) }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+			local out = Anim.Tween(slide, 0.25, { Position = UDim2.fromOffset(dir, 0) }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 			out.Completed:Once(function()
 				if holder.Parent == nil then return end
 				local fold = Anim.Tween(holder, 0.2, { Size = UDim2.new(1, 0, 0, 0) }, Enum.EasingStyle.Quad)

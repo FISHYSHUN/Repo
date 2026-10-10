@@ -39,12 +39,14 @@ function Visuals.new()
 		HealthColors = false, -- text turns from green to red as health drops
 		TracerOrigin = "Bottom", -- "Bottom" | "Center" | "Mouse"
 		TracerThickness = 1,
+		FlagColor = true, -- players flagged by the Guard are drawn orange
 		FillColor = Color3.fromRGB(255, 60, 60),
 		OutlineColor = Color3.fromRGB(255, 255, 255),
 	}
 	self._entries = {}
 	self._conns = {}
 	self._folder = nil
+	self.FlaggedFn = nil -- function(player) -> true when the Guard flagged them
 	return self
 end
 
@@ -64,6 +66,9 @@ function Visuals:_allowed(player)
 end
 
 function Visuals:_color(player)
+	if self.Settings.FlagColor and self.FlaggedFn and self.FlaggedFn(player) then
+		return Color3.fromRGB(255, 170, 0)
+	end
 	if self.Settings.TeamColors and player.Team then
 		return player.TeamColor.Color
 	end

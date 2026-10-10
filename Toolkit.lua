@@ -317,26 +317,41 @@ end
 -- state.Moved becomes true once the pointer travelled > 4px
 local function MakeDrag(handle, ui)
 	local state = { Moved = false }
-	local dragging, startPos, startOff = false, 0, 0
+	local dragging, fromMouse, startPos, startOff = false, false, 0, 0
 	local function axis(input)
 		return ui.DockSide == "Top" and input.Position.X or input.Position.Y
 	end
+	local function stop() dragging = false end
+
 	handle.InputBegan:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		local kind = input.UserInputType
+		if kind == Enum.UserInputType.MouseButton1 or kind == Enum.UserInputType.Touch then
 			state.Moved = false
 			if not ui.Draggable then return end
-			dragging, startPos, startOff = true, axis(input), ui.Offset
+			dragging, fromMouse, startPos, startOff = true, kind == Enum.UserInputType.MouseButton1, axis(input), ui.Offset
 			input.Changed:Connect(function()
-				if input.UserInputState == Enum.UserInputState.End then dragging = false end
+				if input.UserInputState == Enum.UserInputState.End then stop() end
 			end)
 		end
 	end)
 	UserInputService.InputChanged:Connect(function(input)
-		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+		if not dragging then return end
+		local kind = input.UserInputType
+		if kind == Enum.UserInputType.MouseMovement or kind == Enum.UserInputType.Touch then
+			-- a release outside the window is never reported: if the button is already up, the drag is over
+			if fromMouse and not UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
+				stop()
+				return
+			end
 			local d = axis(input) - startPos
 			if math.abs(d) > 4 then state.Moved = true end
 			ui:_setOffset(startOff + d)
 		end
+	end)
+	-- belt and braces: any release anywhere ends the drag
+	UserInputService.InputEnded:Connect(function(input)
+		local kind = input.UserInputType
+		if kind == Enum.UserInputType.MouseButton1 or kind == Enum.UserInputType.Touch then stop() end
 	end)
 	return state
 end
@@ -384,6 +399,23 @@ local function NewHost(parent)
 		Anim.Slide(old, UDim2.fromScale(-dir, 0), function()
 			if self.Current ~= old then old.Visible = false end
 		end)
+	end
+
+	-- takes a page out of the host (for a detached window) and hands it back later
+	function host:Remove(key)
+		local page = self.Pages[key]
+		if not page then return nil end
+		self.Pages[key] = nil
+		if self.Current == page then self.Current = nil end
+		return page
+	end
+
+	function host:Restore(key, page)
+		page.Parent = self.Frame
+		page.Position = UDim2.new()
+		page.Size = UDim2.fromScale(1, 1)
+		page.Visible = false
+		self.Pages[key] = page
 	end
 
 	return host

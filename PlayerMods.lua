@@ -713,7 +713,10 @@ function PlayerMods:_saveCamera()
 		Type = cam.CameraType,
 		Subject = cam.CameraSubject,
 		CFrame = cam.CFrame,
-		MouseBehavior = UserInputService.MouseBehavior,
+		-- LockCurrentPosition is only ever temporary (Right Mouse held, or our own free cam look).
+		-- Remembering it would lock the cursor in place again when the camera is handed back.
+		MouseBehavior = (UserInputService.MouseBehavior == Enum.MouseBehavior.LockCurrentPosition)
+			and Enum.MouseBehavior.Default or UserInputService.MouseBehavior,
 	}
 end
 
@@ -796,6 +799,15 @@ function PlayerMods:SetFreeCam(enabled)
 	local pitch, yaw = cam.CFrame:ToOrientation()
 	self._free = { Pos = cam.CFrame.Position, Pitch = pitch, Yaw = yaw, TPitch = pitch, TYaw = yaw, Vel = Vector3.zero }
 	cam.CameraType = Enum.CameraType.Scriptable
+	-- if the window loses focus while Right Mouse is down, the release is never reported and the
+	-- cursor would stay locked: unlock at once and ignore the stale "held" state until focus is back
+	table.insert(self._targetConns, UserInputService.WindowFocusReleased:Connect(function()
+		if self._free then self._free.Away = true end
+		UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+	end))
+	table.insert(self._targetConns, UserInputService.WindowFocused:Connect(function()
+		if self._free then self._free.Away = false end
+	end))
 	RunService:BindToRenderStep(FREECAM_STEP, CAMERA_PRIORITY, function(dt)
 		self:_stepFreeCam(dt)
 	end)
@@ -812,7 +824,7 @@ function PlayerMods:_stepFreeCam(dt)
 	local typing = self:_typing()
 
 	-- look (only while Right Mouse is held, so the cursor stays usable for the menu)
-	if not typing and UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then
+	if not typing and not f.Away and UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then
 		UserInputService.MouseBehavior = Enum.MouseBehavior.LockCurrentPosition
 		local delta = UserInputService:GetMouseDelta()
 		local sens = math.rad(self.Settings.FreeCamSensitivity)

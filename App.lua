@@ -3,7 +3,7 @@
 -- so the loader can replace a running menu when you execute it again.
 --
 -- LAYOUT: one side tab per topic, every page is a small grid of cards ("quad") instead of a long list.
---   Movement  Flight  Teleport  Camera  World  Visuals  Tracking  Info  Settings
+--   Movement  Flight  Teleport  Camera  World  Visuals  Tracking  Guard  Info  Settings
 local import = ...
 
 local UserInputService = game:GetService("UserInputService")
@@ -12,10 +12,11 @@ local GuiUI = import("Window")
 local PlayerMods = import("PlayerMods")
 local Visuals = import("Visuals")
 local Config = import("Config")
+local Guard = import("Guard")
 
 local ui = GuiUI.new({
 	Title = "Player Menu",
-	Subtitle = "v1.3",
+	Subtitle = "v1.4",
 	ToggleKey = Enum.KeyCode.RightShift, -- can be rebound with the button in the bottom bar
 	Style = "GNOME", -- dark GNOME is the only style
 	DockSide = "Left", -- Left | Right | Top : which screen edge the bar is glued to
@@ -34,6 +35,19 @@ local ui = GuiUI.new({
 
 local mods = PlayerMods.new()
 local visuals = Visuals.new()
+local guard = Guard.new()
+
+-- wire the guard to your own tools
+visuals.FlaggedFn = function(p) return guard:IsFlagged(p) end
+guard.IsExempt = function() return mods.Flying or mods.CamMode ~= "Off" or mods._glide ~= nil end
+guard.OnAlert = function(text) ui:Notify(text) end
+
+-- your own teleports (slots, click, player, undo) must not trip Block Forced TP
+local baseTeleport = mods.TeleportTo
+mods.TeleportTo = function(self, cf)
+	guard:Allow(2)
+	return baseTeleport(self, cf)
+end
 
 local defaultGravity = math.round(mods.Defaults.Gravity)
 local defaultFov = math.clamp(math.round(mods.Defaults.FOV), 40, 120)
@@ -317,6 +331,61 @@ toggle(checkCell, "Show FOV Circle", "trackShowFov", false, function(on) mods:Se
 toggle(checkCell, "Team Check", "trackTeamCheck", true, function(on) mods:SetTrackOption("TeamCheck", on) end, true)
 toggle(checkCell, "Wall Check", "trackWallCheck", false, function(on) mods:SetTrackOption("WallCheck", on) end, true)
 
+-- GUARD -----------------------------------------------------------------------
+local guardTab = ui:AddTab("Guard", "Guard", "🛡")
+local watchCell, guardChecks, shieldCell, flagCell = guardTab:AddQuad("Guard", "Guard", { "Watch", "Checks", "Shield", "Flags" })
+
+local flaggedLabel, lastLabel
+local function refreshFlags()
+	local list = guard:GetFlagged()
+	flaggedLabel.Text = "Flagged: " .. #list
+	local last = list[#list]
+	local rec = last and guard:GetRecord(last)
+	lastLabel.Text = rec and ("Last: " .. last.Name .. " (" .. rec.Last .. ")") or "Last: none"
+end
+
+toggle(watchCell, "Watch Players", "guardMonitor", false, function(on)
+	guard:Set("Monitor", on)
+	ui:Notify("Guard watch " .. onOff(on))
+end, true)
+toggle(watchCell, "Alerts", "guardAlerts", true, function(on) guard:Set("Alerts", on) end, true)
+toggle(watchCell, "Highlight Flagged", "guardColor", true, function(on) visuals:Set("FlagColor", on) end, true)
+slider(watchCell, "Strikes To Flag", "guardStrikes", 2, 10, 4, function(v) guard:Set("StrikesToFlag", v) end, true)
+
+toggle(guardChecks, "Speed", "guardSpeed", true, function(on) guard:Set("Speed", on) end, true)
+toggle(guardChecks, "Fly", "guardFly", true, function(on) guard:Set("Fly", on) end, true)
+toggle(guardChecks, "Teleport", "guardTeleport", true, function(on) guard:Set("Teleport", on) end, true)
+toggle(guardChecks, "Fling", "guardFling", true, function(on) guard:Set("Fling", on) end, true)
+toggle(guardChecks, "Spin", "guardSpin", true, function(on) guard:Set("Spin", on) end, true)
+slider(guardChecks, "Speed Tolerance %", "guardTolerance", 120, 400, 200, function(v) guard:Set("SpeedTolerance", v) end, true)
+slider(guardChecks, "Spin Min rad/s", "guardSpinMin", 4, 40, 10, function(v) guard:Set("SpinMin", v) end, true)
+
+toggle(shieldCell, "No Player Collision", "guardNoCollide", false, function(on)
+	guard:Set("NoCollide", on)
+	ui:Notify("Player collision " .. (on and "off" or "on"))
+end, true)
+toggle(shieldCell, "Anti-Fling", "guardAntiFling", false, function(on) guard:Set("AntiFling", on) end, true)
+shieldCell:AddLabel("No pushing, spin or launch")
+toggle(shieldCell, "Anti-Void", "guardAntiVoid", false, function(on) guard:Set("AntiVoid", on) end, true)
+toggle(shieldCell, "Block Forced TP", "guardAntiSnap", false, function(on) guard:Set("AntiSnap", on) end, true)
+slider(shieldCell, "Max Self Speed", "guardMaxSpeed", 100, 600, 250, function(v) guard:Set("MaxSelfSpeed", v) end, true)
+
+flaggedLabel = flagCell:AddLabel("Flagged: 0")
+lastLabel = flagCell:AddLabel("Last: none")
+flagCell:AddButton("Spectate Last", function()
+	local list = guard:GetFlagged()
+	local p = list[#list]
+	if p and mods:Spectate(p) then ui:Notify("Spectating " .. p.DisplayName) else ui:Notify("Nobody flagged") end
+end)
+flagCell:AddButton("Clear Flags", function()
+	guard:ClearFlags()
+	ui:Notify("Flags cleared")
+end)
+
+guard.OnChange = refreshFlags
+-- shown once per player + cheat type
+guard.OnFlag = function(p, kind) ui:Notify("Player " .. p.Name .. " Detected " .. kind, 4) end
+
 -- INFO ------------------------------------------------------------------------
 local info = ui:AddTab("Info", "Info", "📊")
 local perfCell, charCell, sessionCell = info:AddQuad("Stats", "Stats", { "Performance", "Character", "Session" })
@@ -343,7 +412,8 @@ end)
 task.spawn(function()
 	while ui.Gui.Parent do
 		task.wait(0.25)
-		if ui.IsOpen and not ui.Minimized and ui.CurrentTab == "Info" and info.CurrentSub == "Stats" then
+		local shown = ui:IsTabFloating("Info") or (ui.IsOpen and not ui.Minimized and ui.CurrentTab == "Info")
+		if shown and info.CurrentSub == "Stats" then
 			local s = mods:GetStats()
 			fpsLabel.Text = "FPS: " .. s.FPS
 			pingLabel.Text = "Ping: " .. s.Ping .. " ms"
@@ -423,6 +493,27 @@ dockCell:AddToggle("Auto-hide", true, function(on) ui:SetAutoHide(on) end)
 dockCell:AddSlider("Hide After (s)", 3, 60, 8, function(v) ui:SetIdleTime(v) end)
 dockCell:AddButton("Reset Position", function() ui:ResetPosition() end)
 
+-- COMFORT: tab labels, spacing, alerts, detached tabs ---------------------------------------
+local confirmReset = true
+local comfortTabs, comfortSpace, comfortToast, comfortFloat = settings:AddQuad("Comfort", "Comfort", { "Tabs", "Spacing", "Alerts", "Detach" })
+
+dropdown(comfortTabs, "Tab Labels", "tabDisplay", ui:GetTabDisplayModes(), "Icons", function(v) ui:SetTabDisplay(v) end, true)
+comfortTabs:AddLabel("Icons, Text or Both")
+toggle(comfortTabs, "Confirm Reset", "confirmReset", true, function(on) confirmReset = on end, true)
+
+slider(comfortSpace, "Tab Spacing", "tabGap", 0, 24, 8, function(v) ui:SetTabSpacing(v) end, true)
+slider(comfortSpace, "Control Spacing", "controlGap", 0, 20, 6, function(v) ui:SetControlSpacing(v) end, true)
+
+toggle(comfortToast, "Notifications", "notify", true, function(on) ui:SetNotifications(on) end, true)
+dropdown(comfortToast, "Corner", "toastCorner", ui:GetToastCorners(), "Bottom Right", function(v) ui:SetToastCorner(v) end, true)
+slider(comfortToast, "Duration %", "toastTime", 50, 300, 100, function(v) ui:SetToastTime(v / 100) end, true)
+
+slider(comfortFloat, "Detached Size %", "floatScale", 50, 130, 100, function(v) ui:SetFloatScale(v / 100) end, true)
+toggle(comfortFloat, "Lock Tabs", "lockTabs", false, function(on) ui:SetLockTabs(on) end, true)
+comfortFloat:AddButton("Detach Current", function() ui:DetachCurrent() end)
+comfortFloat:AddButton("Dock All", function() ui:DockAllTabs() end)
+comfortFloat:AddLabel("Or drag a tab out")
+
 -- KEYS: click a button, then press a key (Esc cancels, Backspace clears) ----------------
 local keyMainCell, keyMoreCell = settings:AddQuad("Keys", "Keys", { "Actions", "Camera & Menu" })
 local flyKey = keyMainCell:AddKeybind("Fly", Enum.KeyCode.F)
@@ -491,7 +582,8 @@ fileCell:AddToggle("Auto-load on start", false, function(on)
 	ui:Notify(on and ("Auto-load: " .. cfgName) or "Auto-load off")
 end)
 
-resetCell:AddButton("Reset Everything", function()
+local resetArmed = false
+local function resetAll()
 	mods:Reset() -- turns every mod off and puts the character / world back
 	for key, entry in registry do
 		entry.value = entry.default
@@ -501,6 +593,17 @@ resetCell:AddButton("Reset Everything", function()
 	freeCam.Set(false)
 	specLabel.Text = mods:GetCameraStatus()
 	ui:Notify("Everything reset")
+end
+
+resetCell:AddButton("Reset Everything", function()
+	if confirmReset and not resetArmed then
+		resetArmed = true
+		ui:Notify("Press again within 3s to reset everything", 3)
+		task.delay(3, function() resetArmed = false end)
+		return
+	end
+	resetArmed = false
+	resetAll()
 end)
 resetCell:AddLabel("Back to the defaults")
 
@@ -523,6 +626,7 @@ return {
 	Destroy = function()
 		hotkeyConn:Disconnect()
 		pcall(function() visuals:Destroy() end)
+		pcall(function() guard:Destroy() end)
 		mods:Destroy()
 		ui:Destroy()
 	end,

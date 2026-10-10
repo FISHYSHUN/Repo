@@ -1,6 +1,7 @@
 -- modules/Window.lua
 -- The GUI class. Builds the window parts, owns the constructor and the tab system, then installs
--- the other modules onto the class:  Dock (layout)  Controls (page widgets)  Behavior (open/close/API).
+-- the other modules onto the class:  Dock (layout)  Controls (page widgets)  Behavior (open/close/API)
+-- Comfort (tab labels, spacing, toasts)  Float (drag-out tabs).
 -- It knows nothing about the player; controls just fire callbacks.
 --
 --   ui:AddTab(id, name, icon) / ui:AddBottomTab(id, name) / tab:AddSubTab(id, name)
@@ -18,6 +19,7 @@
 --         SlideMode: "Auto" | "LeftToRight" | "RightToLeft",
 --         Theme (preset name), Accent (Color3), CornerRadius (px), Font (name), AnimSpeed
 --         Entrance (true): cards rise into place when a page opens
+--         TabDisplay: "Icons" | "Text" | "Both" (what the sidebar tab buttons show)
 local import = ...
 
 local Players = game:GetService("Players")
@@ -223,6 +225,11 @@ function GuiUI.new(config)
 	self._slideToken = 0
 	self._panelOpen = true
 	self._sideCount, self._bottomCount = 0, 0
+	self._floats, self._spacers = {}, {}
+	self.TabDisplay = (config.TabDisplay == "Text" or config.TabDisplay == "Both") and config.TabDisplay or "Icons"
+	self.TabGap, self.ControlGap = 8, 6
+	self.Notifications, self.ToastScale, self.ToastDir = true, 1, 320
+	self.FloatScale, self.LockTabs = 1, false
 	self._title, self._subtitle = config.Title or "Window Title", config.Subtitle or ""
 
 	T.loadSkin(self.Style)
@@ -398,8 +405,13 @@ local function newTab(self, id, name, isBottom, icon)
 	local tab = setmetatable({
 		UI = self, Id = id, Name = name, Order = order, Button = btn, IsBottom = isBottom,
 		SubHost = subHost, Bar = barPage, Subs = {}, SubCount = 0, CurrentSub = nil,
+		Icon = icon, IsImage = (not isBottom) and type(icon) == "string" and icon:sub(1, 13) == "rbxassetid://",
 	}, Tab)
 	self.Tabs[id] = tab
+	if not isBottom then
+		self:_armDetach(tab)
+		self:_refreshTabLabels()
+	end
 	if not self.CurrentTab then self:SelectTab(id) end
 	return tab
 end
@@ -428,11 +440,12 @@ end
 function GuiUI:_revealTab(tab)
 	local list = self.TabList
 	local hz = State.Skin.Horizontal == true
-	local S = Theme.Size
-	local item = hz and S.TabIcon or S.Tab
-	local gap = 8
-	local start = (tab.Order - 1) * (item + gap) + (hz and 8 or 8)
 	local scale = math.max(self.UIScale.Scale, 0.01)
+	local holder = tab.Button.Holder
+	local start = (hz and (holder.AbsolutePosition.X - list.AbsolutePosition.X)
+		or (holder.AbsolutePosition.Y - list.AbsolutePosition.Y)) / scale
+	start += hz and list.CanvasPosition.X or list.CanvasPosition.Y
+	local item = (hz and holder.AbsoluteSize.X or holder.AbsoluteSize.Y) / scale
 	local window = (hz and list.AbsoluteWindowSize.X or list.AbsoluteWindowSize.Y) / scale
 	local target = math.max(0, start + item / 2 - window / 2)
 	Anim.Tween(list, 0.35, { CanvasPosition = hz and Vector2.new(target, 0) or Vector2.new(0, target) }, Enum.EasingStyle.Quint)
@@ -527,7 +540,8 @@ function Tab:AddQuad(id, name, titles)
 			CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollBarThickness = 3, Parent = face,
 		})
 		New("UIPadding", { PaddingTop = UDim.new(0, 2), PaddingBottom = UDim.new(0, 6), PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 10), Parent = scroll })
-		New("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder, Parent = scroll })
+		local gap = New("UIListLayout", { Padding = UDim.new(0, self.UI.ControlGap), SortOrder = Enum.SortOrder.LayoutOrder, Parent = scroll })
+		table.insert(self.UI._spacers, { gap, 0 })
 		cells[i] = setmetatable({ UI = self.UI, Id = id .. "_" .. i, Name = titles[i], Container = scroll, Count = 0, Owner = sub }, Page)
 		holders[i] = holder
 		slots[i] = slot
@@ -553,7 +567,8 @@ function Tab:AddSubTab(id, name)
 		CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollBarThickness = 4, Parent = frame,
 	})
 	New("UIPadding", { PaddingTop = UDim.new(0, 12), PaddingBottom = UDim.new(0, 12), PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 14), Parent = container })
-	New("UIListLayout", { Padding = UDim.new(0, 10), SortOrder = Enum.SortOrder.LayoutOrder, Parent = container })
+	local gap = New("UIListLayout", { Padding = UDim.new(0, self.UI.ControlGap + 4), SortOrder = Enum.SortOrder.LayoutOrder, Parent = container })
+	table.insert(self.UI._spacers, { gap, 4 })
 
 	local sub = setmetatable({
 		UI = self.UI, Id = id, Name = name, Order = self.SubCount, Button = btn, Container = container, Count = 0,
@@ -582,5 +597,7 @@ end
 import("Dock")(GuiUI)
 import("Controls")(Page)
 import("Behavior")(GuiUI)
+import("Comfort")(GuiUI)
+import("Float")(GuiUI)
 
 return GuiUI
