@@ -84,7 +84,7 @@ return function(GuiUI)
 		self.Minimized = false
 		if self._panelOpen then return end
 		self._panelOpen = true
-		self:_slidePanel(true)
+		self:_slidePanel(true, function() self:_playEntrance() end)
 	end
 
 	function GuiUI:ToggleMinimize()
@@ -157,6 +157,7 @@ return function(GuiUI)
 	function GuiUI:Notify(text, duration)
 		duration = duration or 2.5
 		self._toastCount += 1
+		self._toasts = self._toasts or {}
 		local holder = New("Frame", {
 			Name = "Toast", BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 36),
 			LayoutOrder = self._toastCount, Parent = self.ToastArea,
@@ -173,12 +174,27 @@ return function(GuiUI)
 		Bind(bar, "BackgroundColor3", "Active")
 		Label(face, text, { Align = Enum.TextXAlignment.Left, TextSize = Theme.FontSize.Small, PadX = 18 })
 
-		Anim.Tween(slide, 0.3, { Position = UDim2.new() }, Enum.EasingStyle.Back)
-		task.delay(duration, function()
+		-- leaving: slide out to the right, then the space it used folds shut so the others glide down
+		local toast = {}
+		function toast.Dismiss()
+			if toast.Done then return end
+			toast.Done = true
+			local i = table.find(self._toasts, toast)
+			if i then table.remove(self._toasts, i) end
 			if holder.Parent == nil then return end
 			local out = Anim.Tween(slide, 0.25, { Position = UDim2.fromOffset(320, 0) }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
-			out.Completed:Once(function() holder:Destroy() end)
-		end)
+			out.Completed:Once(function()
+				if holder.Parent == nil then return end
+				local fold = Anim.Tween(holder, 0.2, { Size = UDim2.new(1, 0, 0, 0) }, Enum.EasingStyle.Quad)
+				fold.Completed:Once(function() holder:Destroy() end)
+			end)
+		end
+
+		table.insert(self._toasts, toast)
+		if #self._toasts > 4 then self._toasts[1].Dismiss() end -- never more than 4 at once
+
+		Anim.Tween(slide, 0.3, { Position = UDim2.new() }, Enum.EasingStyle.Back)
+		task.delay(duration, toast.Dismiss)
 	end
 
 	---------------------------------------------------------------------------
@@ -236,6 +252,8 @@ return function(GuiUI)
 	function GuiUI:SetAnimSpeed(multiplier) Theme.AnimSpeed = math.clamp(multiplier, 0.25, 4) end
 	function GuiUI:SetSlideMode(mode) self.SlideMode = mode end
 	function GuiUI:SetDraggable(enabled) self.Draggable = enabled end
+	-- cards rising into place when a page opens (turn off for a perfectly still menu)
+	function GuiUI:SetEntrance(enabled) self.Entrance = enabled end
 
 	-- "Left" | "Right" | "Top": which screen edge the bar is glued to
 	function GuiUI:SetDockSide(side)

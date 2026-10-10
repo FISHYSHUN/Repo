@@ -1,6 +1,9 @@
 -- modules/App.lua (formerly Main.client.lua)
 -- Connects the UI module to the functionality module. Returns an object with :Destroy()
 -- so the loader can replace a running menu when you execute it again.
+--
+-- LAYOUT: one side tab per topic, every page is a small grid of cards ("quad") instead of a long list.
+--   Movement  Flight  Teleport  Camera  World  Visuals  Tracking  Info  Settings
 local import = ...
 
 local UserInputService = game:GetService("UserInputService")
@@ -12,20 +15,21 @@ local Config = import("Config")
 
 local ui = GuiUI.new({
 	Title = "Player Menu",
-	Subtitle = "v1.2",
+	Subtitle = "v1.3",
 	ToggleKey = Enum.KeyCode.RightShift, -- can be rebound with the button in the bottom bar
 	Style = "Modern", -- Modern | WindowsXP | WindowsVista | Windows11 | Windows95 | KDEPlasma | GNOME | macOS
 	DockSide = "Left", -- Left | Right | Top : which screen edge the bar is glued to
 	BarSize = 56, -- bar thickness in px (36 - 100)
-	UserScale = 0.6, -- starts at 60% (the slider in Settings > Size goes 30% - 160%)
+	UserScale = 0.6, -- starts at 60% (the slider in Settings > Look goes 30% - 160%)
 	AutoHide = true, -- shrink into the edge widget when not used
 	IdleTime = 8, -- seconds of inactivity before that happens
 	WidgetLength = 84, -- length of the edge widget (px)
+	Entrance = true, -- cards rise into place when a page opens (Settings > Look > Motion)
 	-- StartCollapsed = true, -- start as the widget instead of the open menu
 	TitleRotation = "Auto", -- Auto | Up | Down (Left / Right docks only)
 	-- SlideMode = "LeftToRight", -- uncomment to always slide pages in from the left
 	-- Theme = "Midnight", -- Default | Dark | Midnight | Forest | Crimson | Light
-	-- CornerRadius = 16, -- every style starts at the max (16); lower it here or in Settings > Size
+	-- CornerRadius = 16, -- every style starts at the max (16); lower it here or in Settings > Look
 })
 
 local mods = PlayerMods.new()
@@ -40,7 +44,8 @@ local function onOff(on) return on and "ON" or "OFF" end
 
 -- Config registry ------------------------------------------------------------
 -- Every control created through these helpers is remembered, so it can be saved to
--- and restored from a config. resetApply = also re-apply the default on "Reset All".
+-- and restored from a config. resetApply = also re-apply the default on "Reset All"
+-- (for tuning values that live in the module, not on the character / world).
 local registry = {}
 
 local function register(key, default, apply, resetApply)
@@ -82,115 +87,156 @@ local function setEntry(key, value)
 	pcall(entry.apply, value)
 end
 
--- Always on top ---------------------------------------------------------------
--- Max DisplayOrder + (when possible) parented to gethui()/CoreGui so game GUIs can't cover
--- the menu. A watcher puts the order back if a game script changes it.
-local topmostConn
-local originalOrder = (ui.Gui and ui.Gui:IsA("ScreenGui")) and ui.Gui.DisplayOrder or 0
-
-local function setTopmost(on)
-	local gui = ui.Gui
-	if not (gui and gui:IsA("ScreenGui")) then return end
-	if topmostConn then
-		topmostConn:Disconnect()
-		topmostConn = nil
-	end
-	if on then
-		gui.DisplayOrder = 2147483647
-		pcall(function() gui.ResetOnSpawn = false end)
-		local ok, host = pcall(function() return (gethui and gethui()) or game:GetService("CoreGui") end)
-		if ok and host and gui.Parent ~= host then
-			pcall(function() gui.Parent = host end)
-		end
-		topmostConn = gui:GetPropertyChangedSignal("DisplayOrder"):Connect(function()
-			if gui.DisplayOrder ~= 2147483647 then gui.DisplayOrder = 2147483647 end
-		end)
-	else
-		gui.DisplayOrder = originalOrder
-	end
+-- put a control back to its default WITHOUT calling its apply (the caller already reset the real value)
+local function restore(key)
+	local entry = registry[key]
+	if not entry then return end
+	entry.value = entry.default
+	pcall(entry.control.Set, entry.default)
 end
-setTopmost(true)
 
--- SIDEBAR TAB: Movement ------------------------------------------------------
+local function flip(key) setEntry(key, not registry[key].value) end
+
+-- MOVEMENT --------------------------------------------------------------------
 local movement = ui:AddTab("Movement", "Movement")
+local walkCell, jumpCell, sprintCell, bodyCell = movement:AddQuad("Speed", "Speed", { "Walk", "Jump", "Sprint", "Body" })
 
-local speedPage = movement:AddSubTab("Speed", "Speed")
-local walk = slider(speedPage, "Walk Speed", "walkSpeed", 16, 150, 16, function(v) mods:SetWalkSpeed(v) end)
-local jump = slider(speedPage, "Jump Power", "jumpPower", 50, 250, 50, function(v) mods:SetJumpPower(v) end)
-local hip = slider(speedPage, "Hip Height", "hipHeight", 0, 20, 2, function(v) mods:SetHipHeight(v) end)
-speedPage:AddSection("Sprint (hold Left Shift)")
-local sprint = speedPage:AddToggle("Sprint", false, function(on)
+slider(walkCell, "Walk Speed", "walkSpeed", 16, 150, 16, function(v) mods:SetWalkSpeed(v) end)
+walkCell:AddButton("Reset", function() mods:ResetValue("WalkSpeed"); restore("walkSpeed") end)
+
+slider(jumpCell, "Jump Power", "jumpPower", 50, 250, 50, function(v) mods:SetJumpPower(v) end)
+toggle(jumpCell, "Infinite Jump", "infJump", false, function(on) mods:SetInfiniteJump(on) end)
+jumpCell:AddButton("Reset", function() mods:ResetValue("JumpPower"); restore("jumpPower") end)
+
+toggle(sprintCell, "Sprint", "sprint", false, function(on)
 	mods:SetSprint(on)
 	ui:Notify("Sprint " .. onOff(on))
 end)
-local sprintMul = slider(speedPage, "Sprint Speed %", "sprintSpeed", 110, 300, 160, function(v) mods:SetSprintMultiplier(v / 100) end)
+slider(sprintCell, "Sprint Speed %", "sprintSpeed", 110, 300, 160, function(v) mods:SetSprintMultiplier(v / 100) end, true)
+sprintCell:AddLabel("Hold Left Shift")
 
-local flightPage = movement:AddSubTab("Flight", "Flight")
-local fly = flightPage:AddToggle("Fly", false, function(on)
+slider(bodyCell, "Hip Height", "hipHeight", 0, 20, 2, function(v) mods:SetHipHeight(v) end)
+toggle(bodyCell, "Keep Values", "keepValues", false, function(on) mods:SetPersist(on) end)
+bodyCell:AddButton("Respawn", function() mods:Respawn() end)
+
+-- FLIGHT ----------------------------------------------------------------------
+local flight = ui:AddTab("Flight", "Flight")
+local flyCell, feelCell, noclipCell, airCell = flight:AddQuad("Fly", "Fly", { "Fly", "Feel", "Noclip", "Air" })
+
+toggle(flyCell, "Fly", "fly", false, function(on)
 	mods:SetFly(on)
 	ui:Notify("Fly " .. onOff(on))
 end)
-flightPage:AddLabel("Fly: WASD to move, Space up, Ctrl down.")
-local flySpeed = slider(flightPage, "Fly Speed", "flySpeed", 20, 200, 60, function(v) mods:SetFlySpeed(v) end)
-local noclip = flightPage:AddToggle("Noclip", false, function(on)
+slider(flyCell, "Fly Speed", "flySpeed", 20, 200, 60, function(v) mods:SetFlySpeed(v) end, true)
+flyCell:AddLabel("WASD, Space up, Ctrl down")
+
+slider(feelCell, "Smoothing %", "flySmooth", 0, 100, 60, function(v) mods:SetFlySmooth(v) end, true)
+toggle(feelCell, "Shift Boost", "flyBoost", true, function(on) mods:SetFlyBoost(on) end, true)
+feelCell:AddLabel("Shift = 2x speed")
+
+toggle(noclipCell, "Noclip", "noclip", false, function(on)
 	mods:SetNoclip(on)
 	ui:Notify("Noclip " .. onOff(on))
 end)
+noclipCell:AddLabel("Walk through walls")
 
-local extrasPage = movement:AddSubTab("Extras", "Extras")
-local infJump = extrasPage:AddToggle("Infinite Jump", false, function(on) mods:SetInfiniteJump(on) end)
-local clickTp = extrasPage:AddToggle("Click Teleport", false, function(on)
+toggle(airCell, "Slow Fall", "slowFall", false, function(on) mods:SetSlowFall(on) end)
+slider(airCell, "Max Fall Speed", "fallSpeed", 5, 100, 30, function(v) mods:SetFallSpeed(v) end, true)
+
+-- TELEPORT --------------------------------------------------------------------
+local teleport = ui:AddTab("Teleport", "Teleport")
+
+-- four save slots: Save Here remembers where you stand, Go takes you back
+local spotCells = { teleport:AddQuad("Spots", "Spots", { "Spot 1", "Spot 2", "Spot 3", "Spot 4" }) }
+for i, cell in spotCells do
+	local status = cell:AddLabel("Empty")
+	cell:AddButton("Save Here", function()
+		if mods:SaveSlot(i) then
+			local p = mods:GetSlot(i)
+			status.Text = string.format("%d, %d, %d", math.round(p.X), math.round(p.Y), math.round(p.Z))
+			ui:Notify("Spot " .. i .. " saved")
+		else
+			ui:Notify("No character to save")
+		end
+	end)
+	cell:AddButton("Go", function()
+		ui:Notify(mods:GoSlot(i) and ("Spot " .. i) or "Spot " .. i .. " is empty")
+	end)
+end
+
+local playerCell, clickCell, glideCell, backCell = teleport:AddQuad("Travel", "Travel", { "Player", "Click", "Glide", "Back" })
+
+local tpName = ""
+playerCell:AddTextBox("Player", "Player name", function(text)
+	tpName = (text == "Player name") and "" or text
+end)
+playerCell:AddButton("Teleport", function()
+	local p = mods:FindPlayer(tpName)
+	if not p then ui:Notify("Player not found") return end
+	ui:Notify(mods:TeleportToPlayer(p) and ("To " .. p.DisplayName) or "They have no character")
+end)
+playerCell:AddButton("Next Player", function()
+	local p = mods:TeleportStep(1)
+	ui:Notify(p and ("To " .. p.DisplayName) or "No other players")
+end)
+
+toggle(clickCell, "Click Teleport", "clickTp", false, function(on)
 	mods:SetClickTeleport(on)
 	ui:Notify("Click Teleport " .. onOff(on) .. (on and " (Ctrl + Click)" or ""))
 end)
-extrasPage:AddLabel("Click Teleport: hold Ctrl and click the ground.")
-extrasPage:AddButton("Respawn Character", function() mods:Respawn() end)
+clickCell:AddLabel("Ctrl + Click the ground")
 
--- SIDEBAR TAB: World ---------------------------------------------------------
-local world = ui:AddTab("World", "World")
+toggle(glideCell, "Smooth Glide", "glide", false, function(on) mods:SetGlide(on) end, true)
+slider(glideCell, "Glide Time (ms)", "glideTime", 100, 1500, 450, function(v) mods:SetGlideTime(v / 1000) end, true)
 
-local physicsPage = world:AddSubTab("Physics", "Physics")
-local gravity = slider(physicsPage, "Gravity", "gravity", 0, 400, defaultGravity, function(v) mods:SetGravity(v) end)
-
-local cameraPage = world:AddSubTab("Camera", "Camera")
-local fov = slider(cameraPage, "Field of View", "fov", 40, 120, defaultFov, function(v) mods:SetFOV(v) end)
-local zoom = slider(cameraPage, "Max Zoom", "maxZoom", 10, 1000, defaultZoom, function(v) mods:SetMaxZoom(v) end)
-
-local lightPage = world:AddSubTab("Lighting", "Lighting")
-local fullbright = lightPage:AddToggle("Fullbright", false, function(on)
-	mods:SetFullbright(on)
-	ui:Notify("Fullbright " .. onOff(on))
+backCell:AddButton("Undo Teleport", function()
+	ui:Notify(mods:UndoTeleport() and "Went back" or "Nothing to undo")
 end)
-local clock = slider(lightPage, "Time of Day", "timeOfDay", 0, 24, defaultClock, function(v) mods:SetTimeOfDay(v) end)
+backCell:AddButton("Respawn", function() mods:Respawn() end)
 
--- Free cam + spectate: added to the existing World > Camera page (no new tabs,
--- so nothing here depends on icon names the Window module doesn't know about)
-cameraPage:AddSection("Free Cam")
-local freeCam = cameraPage:AddToggle("Free Cam", false, function(on)
+-- CAMERA ----------------------------------------------------------------------
+local camera = ui:AddTab("Camera", "Camera")
+local fovCell, zoomCell, freeCell, lookCell = camera:AddQuad("View", "View", { "FOV", "Zoom", "Free Cam", "Free Look" })
+
+slider(fovCell, "Field of View", "fov", 40, 120, defaultFov, function(v) mods:SetFOV(v) end)
+fovCell:AddButton("Reset", function() mods:ResetValue("FOV"); restore("fov") end)
+
+slider(zoomCell, "Max Zoom", "maxZoom", 10, 1000, defaultZoom, function(v) mods:SetMaxZoom(v) end)
+zoomCell:AddButton("Reset", function() mods:ResetValue("MaxZoom"); restore("maxZoom") end)
+
+-- free cam is a live camera mode, so it is not saved in configs
+local freeCam = freeCell:AddToggle("Free Cam", false, function(on)
 	mods:SetFreeCam(on)
 	ui:Notify("Free Cam " .. onOff(on))
 end)
-cameraPage:AddLabel("Hold Right Mouse to look. WASD move, E/Space up, Q down, Shift fast, Ctrl slow.")
-local freeSpeed = slider(cameraPage, "Cam Speed", "freeCamSpeed", 5, 300, 50, function(v) mods:SetFreeCamSpeed(v) end)
-local freeSens = slider(cameraPage, "Look Sensitivity %", "freeCamSens", 10, 100, 30, function(v) mods:SetFreeCamSensitivity(v / 100) end)
+slider(freeCell, "Cam Speed", "freeCamSpeed", 5, 300, 50, function(v) mods:SetFreeCamSpeed(v) end, true)
+freeCell:AddLabel("Hold Right Mouse to look")
 
-cameraPage:AddSection("Spectate")
-local specLabel = cameraPage:AddLabel("Camera: Normal")
-cameraPage:AddButton("Previous Player", function()
-	local p = mods:SpectatePrev()
-	ui:Notify(p and ("Spectating " .. p.DisplayName) or "No other players")
-end)
-cameraPage:AddButton("Next Player", function()
-	local p = mods:SpectateNext()
-	ui:Notify(p and ("Spectating " .. p.DisplayName) or "No other players")
-end)
-cameraPage:AddTextBox("Spectate Player", "Player name", function(text)
+slider(lookCell, "Look Sens %", "freeCamSens", 10, 100, 30, function(v) mods:SetFreeCamSensitivity(v / 100) end, true)
+slider(lookCell, "Smoothing %", "freeCamSmooth", 0, 100, 50, function(v) mods:SetFreeCamSmooth(v) end, true)
+lookCell:AddLabel("WASD  E up  Q down")
+
+local targetCell, cycleCell, modeCell = camera:AddQuad("Spectate", "Spectate", { "Target", "Cycle", "Mode" })
+
+local specLabel = targetCell:AddLabel("Camera: Normal")
+targetCell:AddTextBox("Player", "Player name", function(text)
 	if text == "" or text == "Player name" then return end
 	local p = mods:FindPlayer(text)
 	if p then mods:Spectate(p) else ui:Notify("Player not found") end
 end)
-cameraPage:AddToggle("First-Person View (POV)", false, function(on) mods:SetSpectatePOV(on) end)
-cameraPage:AddButton("Free Cam Around This Player", function()
+targetCell:AddButton("Stop (Back To Me)", function() mods:StopCamera() end)
+
+cycleCell:AddButton("Previous Player", function()
+	local p = mods:SpectatePrev()
+	ui:Notify(p and ("Spectating " .. p.DisplayName) or "No other players")
+end)
+cycleCell:AddButton("Next Player", function()
+	local p = mods:SpectateNext()
+	ui:Notify(p and ("Spectating " .. p.DisplayName) or "No other players")
+end)
+
+modeCell:AddToggle("First-Person (POV)", false, function(on) mods:SetSpectatePOV(on) end)
+modeCell:AddButton("Free Cam Around Them", function()
 	local target = mods.SpectateTarget
 	if target and mods:FocusFreeCam(target) then
 		ui:Notify("Free Cam focused on " .. target.DisplayName)
@@ -198,7 +244,6 @@ cameraPage:AddButton("Free Cam Around This Player", function()
 		ui:Notify("Spectate someone first")
 	end
 end)
-cameraPage:AddButton("Stop (Back To Me)", function() mods:StopCamera() end)
 
 -- keep the UI in sync when the camera changes (hotkeys, player leaving, Reset...)
 mods.OnCameraChanged = function(mode)
@@ -206,143 +251,115 @@ mods.OnCameraChanged = function(mode)
 	freeCam.Set(mode == "Free")
 end
 
--- SIDEBAR TAB: Visuals (ESP + camera tracking) --------------------------------
--- If the Window module refuses a new tab / sub-tab name, these fall back to existing ones
--- instead of killing the whole menu.
-local function safeTab(name)
-	local ok, tab = pcall(function() return ui:AddTab(name, name) end)
-	return ok and tab or world
-end
-local function safeSub(tab, name, fallback)
-	local ok, page = pcall(function() return tab:AddSubTab(name, name) end)
-	return ok and page or fallback
-end
+-- WORLD -----------------------------------------------------------------------
+local world = ui:AddTab("World", "World")
+local gravityCell, timeCell, lightCell = world:AddQuad("World", "World", { "Gravity", "Time", "Light" })
 
-local visualsTab = safeTab("Visuals")
+slider(gravityCell, "Gravity", "gravity", 0, 400, defaultGravity, function(v) mods:SetGravity(v) end)
+gravityCell:AddButton("Reset", function() mods:ResetValue("Gravity"); restore("gravity") end)
 
-local espPage = safeSub(visualsTab, "ESP", cameraPage)
-espPage:AddSection("Player ESP")
-toggle(espPage, "ESP", "espEnabled", false, function(on) visuals:SetEnabled(on) end, true)
-toggle(espPage, "Chams (highlight)", "espChams", true, function(on) visuals:Set("Chams", on) end, true)
-toggle(espPage, "Name Tags", "espNames", true, function(on) visuals:Set("Names", on) end, true)
-toggle(espPage, "Distance", "espDistance", true, function(on) visuals:Set("Distance", on) end, true)
-toggle(espPage, "Health", "espHealth", true, function(on) visuals:Set("Health", on) end, true)
-toggle(espPage, "Tracers", "espTracers", false, function(on) visuals:Set("Tracers", on) end, true)
-toggle(espPage, "Team Check (hide teammates)", "espTeamCheck", true, function(on) visuals:Set("TeamCheck", on) end, true)
-toggle(espPage, "Use Team Colors", "espTeamColors", false, function(on) visuals:Set("TeamColors", on) end, true)
-slider(espPage, "Max Distance", "espMaxDist", 100, 5000, 2000, function(v) visuals:Set("MaxDistance", v) end, true)
-slider(espPage, "Fill Transparency %", "espFillTrans", 0, 100, 60, function(v) visuals:Set("FillTransparency", v / 100) end, true)
-slider(espPage, "Text Size", "espTextSize", 10, 24, 14, function(v) visuals:Set("TextSize", v) end, true)
-espPage:AddSection("Colors")
-color(espPage, "Fill Color", "espFillColor", Color3.fromRGB(255, 60, 60), function(c) visuals:Set("FillColor", c) end, true)
-color(espPage, "Outline Color", "espOutlineColor", Color3.fromRGB(255, 255, 255), function(c) visuals:Set("OutlineColor", c) end, true)
-espPage:AddLabel("Roblox draws at most 31 highlights at once. Tracers need an executor with Drawing support.")
+slider(timeCell, "Time of Day", "timeOfDay", 0, 24, defaultClock, function(v) mods:SetTimeOfDay(v) end)
+toggle(timeCell, "Freeze Time", "freezeTime", false, function(on) mods:SetFreezeTime(on) end)
+timeCell:AddButton("Reset", function() mods:ResetValue("ClockTime"); restore("timeOfDay") end)
 
-local trackPage = safeSub(visualsTab, "Tracking", cameraPage)
-trackPage:AddSection("Camera Tracking")
-toggle(trackPage, "Camera Tracking", "trackEnabled", false, function(on) mods:SetTracking(on) end, true)
-dropdown(trackPage, "Activate", "trackMode", { "Hold Right Mouse", "Hold Left Mouse", "Always" }, "Hold Right Mouse",
-	function(v) mods:SetTrackOption("Mode", v) end, true)
-dropdown(trackPage, "Target Part", "trackPart", { "Head", "HumanoidRootPart", "UpperTorso" }, "Head",
-	function(v) mods:SetTrackOption("Part", v) end, true)
-slider(trackPage, "Tracking Speed", "trackSpeed", 1, 40, 12, function(v) mods:SetTrackOption("Speed", v) end, true)
-slider(trackPage, "Tracking FOV (px)", "trackFov", 30, 800, 250, function(v) mods:SetTrackOption("FOV", v) end, true)
-toggle(trackPage, "Show FOV Circle", "trackShowFov", false, function(on) mods:SetTrackOption("ShowFOV", on) end, true)
-toggle(trackPage, "Team Check", "trackTeamCheck", true, function(on) mods:SetTrackOption("TeamCheck", on) end, true)
-toggle(trackPage, "Wall Check", "trackWallCheck", false, function(on) mods:SetTrackOption("WallCheck", on) end, true)
-trackPage:AddLabel("Turns the camera toward the player closest to your cursor inside the circle.")
-trackPage:AddLabel("Lower speed = smoother. Paused while free cam / spectate is on.")
-
--- SIDEBAR TAB: Info ----------------------------------------------------------
-local info = ui:AddTab("Info", "Info")
-
-local statsPage = info:AddSubTab("Stats", "Stats")
-statsPage:AddSection("Live")
-local fpsLabel = statsPage:AddLabel("FPS: --")
-local pingLabel = statsPage:AddLabel("Ping: --")
-local posLabel = statsPage:AddLabel("Position: --")
-local speedLabel = statsPage:AddLabel("Speed: --")
-
-local teleportPage = info:AddSubTab("Teleport", "Teleport")
-teleportPage:AddLabel("Save your spot and come back to it.")
-teleportPage:AddButton("Save Position", function()
-	ui:Notify(mods:SavePosition() and "Position saved" or "No character to save")
+toggle(lightCell, "Fullbright", "fullbright", false, function(on)
+	mods:SetFullbright(on)
+	ui:Notify("Fullbright " .. onOff(on))
 end)
-teleportPage:AddButton("Teleport To Saved", function()
-	ui:Notify(mods:TeleportToSaved() and "Teleported" or "Nothing saved yet")
+toggle(lightCell, "No Fog", "noFog", false, function(on) mods:SetNoFog(on) end)
+
+-- VISUALS ---------------------------------------------------------------------
+local visualsTab = ui:AddTab("Visuals", "Visuals")
+local showCell, tagCell, tracerCell, rangeCell = visualsTab:AddQuad("ESP", "ESP", { "Show", "Tags", "Tracers", "Range" })
+
+toggle(showCell, "ESP", "espEnabled", false, function(on) visuals:SetEnabled(on) end, true)
+toggle(showCell, "Chams", "espChams", true, function(on) visuals:Set("Chams", on) end, true)
+toggle(showCell, "Team Check", "espTeamCheck", true, function(on) visuals:Set("TeamCheck", on) end, true)
+toggle(showCell, "Team Colors", "espTeamColors", false, function(on) visuals:Set("TeamColors", on) end, true)
+
+toggle(tagCell, "Names", "espNames", true, function(on) visuals:Set("Names", on) end, true)
+toggle(tagCell, "Distance", "espDistance", true, function(on) visuals:Set("Distance", on) end, true)
+toggle(tagCell, "Health", "espHealth", true, function(on) visuals:Set("Health", on) end, true)
+toggle(tagCell, "Health Colors", "espHealthColors", false, function(on) visuals:Set("HealthColors", on) end, true)
+
+toggle(tracerCell, "Tracers", "espTracers", false, function(on) visuals:Set("Tracers", on) end, true)
+dropdown(tracerCell, "Origin", "espTracerOrigin", { "Bottom", "Center", "Mouse" }, "Bottom",
+	function(v) visuals:Set("TracerOrigin", v) end, true)
+slider(tracerCell, "Thickness", "espTracerThick", 1, 5, 1, function(v) visuals:Set("TracerThickness", v) end, true)
+if not visuals:HasDrawing() then tracerCell:AddLabel("Needs Drawing support") end
+
+slider(rangeCell, "Max Distance", "espMaxDist", 100, 5000, 2000, function(v) visuals:Set("MaxDistance", v) end, true)
+slider(rangeCell, "Fill Transp %", "espFillTrans", 0, 100, 60, function(v) visuals:Set("FillTransparency", v / 100) end, true)
+slider(rangeCell, "Text Size", "espTextSize", 10, 24, 14, function(v) visuals:Set("TextSize", v) end, true)
+
+local fillCell, outlineCell = visualsTab:AddQuad("Colors", "Colors", { "Fill", "Outline" })
+color(fillCell, "Fill Color", "espFillColor", Color3.fromRGB(255, 60, 60), function(c) visuals:Set("FillColor", c) end, true)
+color(outlineCell, "Outline Color", "espOutlineColor", Color3.fromRGB(255, 255, 255), function(c) visuals:Set("OutlineColor", c) end, true)
+
+-- TRACKING --------------------------------------------------------------------
+local tracking = ui:AddTab("Tracking", "Tracking")
+local trackCell, pickCell, feelTrackCell, checkCell = tracking:AddQuad("Aim", "Aim", { "Track", "Target", "Feel", "Checks" })
+
+toggle(trackCell, "Tracking", "trackEnabled", false, function(on) mods:SetTracking(on) end, true)
+dropdown(trackCell, "Activate", "trackMode", { "Hold Right Mouse", "Hold Left Mouse", "Always" }, "Hold Right Mouse",
+	function(v) mods:SetTrackOption("Mode", v) end, true)
+trackCell:AddLabel("Turns toward your cursor")
+
+dropdown(pickCell, "Part", "trackPart", { "Head", "HumanoidRootPart", "UpperTorso" }, "Head",
+	function(v) mods:SetTrackOption("Part", v) end, true)
+dropdown(pickCell, "Pick By", "trackPriority", { "Cursor", "Distance", "Health" }, "Cursor",
+	function(v) mods:SetTrackOption("Priority", v) end, true)
+
+slider(feelTrackCell, "Speed", "trackSpeed", 1, 40, 12, function(v) mods:SetTrackOption("Speed", v) end, true)
+slider(feelTrackCell, "FOV (px)", "trackFov", 30, 800, 250, function(v) mods:SetTrackOption("FOV", v) end, true)
+
+toggle(checkCell, "Show FOV Circle", "trackShowFov", false, function(on) mods:SetTrackOption("ShowFOV", on) end, true)
+toggle(checkCell, "Team Check", "trackTeamCheck", true, function(on) mods:SetTrackOption("TeamCheck", on) end, true)
+toggle(checkCell, "Wall Check", "trackWallCheck", false, function(on) mods:SetTrackOption("WallCheck", on) end, true)
+
+-- INFO ------------------------------------------------------------------------
+local info = ui:AddTab("Info", "Info")
+local perfCell, charCell, sessionCell = info:AddQuad("Stats", "Stats", { "Performance", "Character", "Session" })
+local fpsLabel = perfCell:AddLabel("FPS: --")
+local pingLabel = perfCell:AddLabel("Ping: --")
+local memLabel = perfCell:AddLabel("Memory: --")
+local posLabel = charCell:AddLabel("Pos: --")
+local speedLabel = charCell:AddLabel("Speed: --")
+local hpLabel = charCell:AddLabel("Health: --")
+local playersLabel = sessionCell:AddLabel("Players: --")
+local timeLabel = sessionCell:AddLabel("Time: --")
+
+local idleCell, serverCell = info:AddQuad("Utility", "Utility", { "Idle", "Server" })
+toggle(idleCell, "Anti-AFK", "antiAfk", false, function(on)
+	mods:SetAntiAFK(on)
+	ui:Notify("Anti-AFK " .. onOff(on))
+end)
+idleCell:AddLabel("No idle kick")
+serverCell:AddButton("Rejoin Server", function()
+	ui:Notify(mods:Rejoin() and "Rejoining..." or "Rejoin failed")
 end)
 
 -- refresh the live stats a few times per second (only while that page is visible)
 task.spawn(function()
 	while ui.Gui.Parent do
 		task.wait(0.25)
-		if ui.IsOpen and not ui.Minimized and ui.CurrentTab == "Info" then
+		if ui.IsOpen and not ui.Minimized and ui.CurrentTab == "Info" and info.CurrentSub == "Stats" then
 			local s = mods:GetStats()
 			fpsLabel.Text = "FPS: " .. s.FPS
 			pingLabel.Text = "Ping: " .. s.Ping .. " ms"
-			posLabel.Text = string.format("Position: %d, %d, %d",
+			memLabel.Text = "Memory: " .. s.Memory .. " MB"
+			posLabel.Text = string.format("Pos: %d, %d, %d",
 				math.round(s.Position.X), math.round(s.Position.Y), math.round(s.Position.Z))
 			speedLabel.Text = "Speed: " .. s.Speed .. " studs/s"
+			hpLabel.Text = "Health: " .. s.Health .. " / " .. s.MaxHealth
+			playersLabel.Text = "Players: " .. s.Players .. " / " .. s.MaxPlayers
+			timeLabel.Text = string.format("Time: %d:%02d", s.Session // 60, s.Session % 60)
 		end
 	end
 end)
 
--- BOTTOM-BAR TAB: Settings ---------------------------------------------------
--- Four short pages so nothing is crowded: Dock | Look | Size | Keys
-local settings = ui:AddBottomTab("Settings", "Settings")
-
--- DOCK: where the bar sits, how thick it is, what it says
-local dockPage = settings:AddSubTab("Dock", "Dock")
-dockPage:AddSection("Position (click to change)")
-dockPage:AddDropdown("Dock Side", ui:GetDockSides(), "Left", function(side) ui:SetDockSide(side) end)
-dockPage:AddToggle("Draggable (along the edge)", true, function(on) ui:SetDraggable(on) end)
-dockPage:AddButton("Reset Position", function() ui:ResetPosition() end)
-toggle(dockPage, "Always on top", "alwaysOnTop", true, function(on) setTopmost(on) end)
-dockPage:AddSection("Bar")
-dockPage:AddSlider("Bar Thickness", 36, 100, 56, function(v) ui:SetBarSize(v) end)
-dockPage:AddDropdown("Title Direction", ui:GetTitleRotations(), "Auto", function(mode) ui:SetTitleRotation(mode) end)
-dockPage:AddSection("Edge widget (shown while the menu is tucked away)")
-dockPage:AddToggle("Auto-hide when idle", true, function(on) ui:SetAutoHide(on) end)
-dockPage:AddSlider("Auto-hide after (sec)", 3, 60, 8, function(v) ui:SetIdleTime(v) end)
-dockPage:AddSlider("Widget Length", 50, 200, 84, function(v) ui:SetWidgetLength(v) end)
-dockPage:AddSection("Bar text")
-dockPage:AddTextBox("Title", "Player Menu", function(text) if text ~= "" then ui:SetTitle(text) end end)
-dockPage:AddTextBox("Subtitle", "v1.2", function(text) ui:SetSubtitle(text) end)
-
--- LOOK: style, colors, font
-local lookPage = settings:AddSubTab("Look", "Look")
-local accent, themeDrop, fontDrop, transSlider, cornerSlider
-
-lookPage:AddSection("Window style (click to change)")
-lookPage:AddDropdown("Style", ui:GetStyleNames(), ui:GetStyle(), function(name)
-	local d = ui:SetStyle(name)
-	if themeDrop then themeDrop.Set("Default") end
-	if accent then accent.Set(d.Accent) end
-	if fontDrop then fontDrop.Set(d.Font) end
-	if transSlider then transSlider.Set(math.round(d.Transparency * 100)) end
-	if cornerSlider then cornerSlider.Set(d.Corner) end
-	ui:Notify("Style: " .. name)
-end)
-themeDrop = lookPage:AddDropdown("Color Scheme", ui:GetThemeNames(), "Default", function(name)
-	accent.Set(ui:SetTheme(name)) -- the preset has its own accent, so sync the sliders
-end)
-fontDrop = lookPage:AddDropdown("Font", ui:GetFontNames(), "SourceSansBold", function(name) ui:SetFont(name) end)
-lookPage:AddSection("Accent color")
-accent = lookPage:AddColorPicker("Accent", ui:GetAccent(), function(c) ui:SetAccent(c) end)
-
--- SIZE: scale, transparency, corners, animation
-local sizePage = settings:AddSubTab("Size", "Size")
-sizePage:AddSection("Window")
-sizePage:AddSlider("UI Scale %", 30, 160, 60, function(v) ui:SetUserScale(v / 100) end)
-transSlider = sizePage:AddSlider("Transparency %", 0, 70, 20, function(v) ui:SetPanelTransparency(v / 100) end)
-cornerSlider = sizePage:AddSlider("Corner Radius", 0, 16, 16, function(v) ui:SetCornerRadius(v) end)
-sizePage:AddSection("Animation")
-sizePage:AddSlider("Animation Speed %", 50, 200, 100, function(v) ui:SetAnimSpeed(v / 100) end)
-sizePage:AddDropdown("Page Slide", { "Auto", "LeftToRight", "RightToLeft" }, "Auto", function(mode)
-	ui:SetSlideMode(mode)
-end)
-
--- CONFIGS: save / load every registered setting to a file in your executor workspace
+-- SETTINGS: everything about the menu itself ----------------------------------
+-- save / load every registered setting to a file in your executor workspace
 local function collect()
 	local values = {}
 	for key, entry in registry do
@@ -377,17 +394,24 @@ local function applyConfig(data)
 	return count
 end
 
-local cfgPage = safeSub(settings, "Configs", dockPage)
+local settings = ui:AddTab("Settings", "Settings")
+
+-- CONFIGS ---------------------------------------------------------------------
+local nameCell, fileCell, manageCell, resetCell = settings:AddQuad("Configs", "Configs", { "Name", "File", "Manage", "Reset" })
 local cfgName = "default"
-cfgPage:AddSection("Save and load your settings")
-cfgPage:AddTextBox("Config Name", "default", function(text)
+nameCell:AddTextBox("Name", "default", function(text)
 	if text ~= "" then cfgName = text end
 end)
-cfgPage:AddButton("Save Config", function()
+nameCell:AddToggle("Auto-load on start", false, function(on)
+	Config.SetAutoload(on and cfgName or nil)
+	ui:Notify(on and ("Auto-load: " .. cfgName) or "Auto-load off")
+end)
+
+fileCell:AddButton("Save Config", function()
 	local ok, err = Config.Save(cfgName, collect())
 	ui:Notify(ok and ("Saved '" .. cfgName .. "'") or ("Save failed: " .. tostring(err)))
 end)
-cfgPage:AddButton("Load Config", function()
+fileCell:AddButton("Load Config", function()
 	local data, err = Config.Load(cfgName)
 	if data then
 		ui:Notify("Loaded '" .. cfgName .. "' (" .. applyConfig(data) .. " settings)")
@@ -395,46 +419,53 @@ cfgPage:AddButton("Load Config", function()
 		ui:Notify("Load failed: " .. tostring(err))
 	end
 end)
-cfgPage:AddButton("Delete Config", function()
+
+manageCell:AddButton("Delete Config", function()
 	ui:Notify(Config.Delete(cfgName) and ("Deleted '" .. cfgName .. "'") or "Nothing to delete")
 end)
-cfgPage:AddButton("List Configs", function()
+manageCell:AddButton("List Configs", function()
 	local names = Config.List()
 	ui:Notify(#names > 0 and ("Configs: " .. table.concat(names, ", ")) or "No saved configs")
 end)
-cfgPage:AddToggle("Auto-load this config on start", false, function(on)
-	Config.SetAutoload(on and cfgName or nil)
-	ui:Notify(on and ("Auto-load: " .. cfgName) or "Auto-load off")
-end)
-cfgPage:AddLabel("Files: workspace/PlayerMenu/configs/<name>.json")
+manageCell:AddLabel("PlayerMenu/configs")
 
--- KEYS: hotkeys (click a button, then press a key; Esc cancels, Backspace clears)
-local keysPage = settings:AddSubTab("Keys", "Keys")
-keysPage:AddSection("Click a button, then press a key")
-local flyKey = keysPage:AddKeybind("Fly Key", Enum.KeyCode.F)
-local noclipKey = keysPage:AddKeybind("Noclip Key", Enum.KeyCode.N)
-local freeCamKey = keysPage:AddKeybind("Free Cam Key", Enum.KeyCode.G)
-local specPrevKey = keysPage:AddKeybind("Spectate Previous", Enum.KeyCode.LeftBracket)
-local specNextKey = keysPage:AddKeybind("Spectate Next", Enum.KeyCode.RightBracket)
-local camStopKey = keysPage:AddKeybind("Stop Camera", Enum.KeyCode.End)
-local espKey = keysPage:AddKeybind("ESP Key", Enum.KeyCode.Z)
-local trackKey = keysPage:AddKeybind("Tracking Key", Enum.KeyCode.T)
-keysPage:AddKeybind("Minimize Key", nil, function(key) ui:SetMinimizeKey(key) end)
-keysPage:AddLabel("Esc cancels, Backspace clears the bind.")
+resetCell:AddButton("Reset All Modifiers", function()
+	mods:Reset() -- turns every mod off and puts the character / world back
+	for key, entry in registry do
+		entry.value = entry.default
+		pcall(entry.control.Set, entry.default)
+		if entry.resetApply then pcall(entry.apply, entry.default) end -- tuning values live in the module
+	end
+	freeCam.Set(false)
+	specLabel.Text = mods:GetCameraStatus()
+	ui:Notify("Everything reset")
+end)
+resetCell:AddLabel("Back to the defaults")
+
+-- KEYS: click a button, then press a key (Esc cancels, Backspace clears) ----------------
+local keyMoveCell, keyCamCell, keyVisCell, keyMenuCell = settings:AddQuad("Keys", "Keys", { "Movement", "Camera", "Visuals", "Menu" })
+local flyKey = keyMoveCell:AddKeybind("Fly", Enum.KeyCode.F)
+local noclipKey = keyMoveCell:AddKeybind("Noclip", Enum.KeyCode.N)
+
+local freeCamKey = keyCamCell:AddKeybind("Free Cam", Enum.KeyCode.G)
+local specPrevKey = keyCamCell:AddKeybind("Prev Player", Enum.KeyCode.LeftBracket)
+local specNextKey = keyCamCell:AddKeybind("Next Player", Enum.KeyCode.RightBracket)
+local camStopKey = keyCamCell:AddKeybind("Stop Camera", Enum.KeyCode.End)
+
+local espKey = keyVisCell:AddKeybind("ESP", Enum.KeyCode.Z)
+local trackKey = keyVisCell:AddKeybind("Tracking", Enum.KeyCode.T)
+
+keyMenuCell:AddKeybind("Minimize", nil, function(key) ui:SetMinimizeKey(key) end)
+keyMenuCell:AddLabel("Esc cancels")
+keyMenuCell:AddLabel("Backspace clears")
 
 local hotkeyConn = UserInputService.InputBegan:Connect(function(input, processed)
 	if processed or ui:IsCapturing() or input.UserInputType ~= Enum.UserInputType.Keyboard then return end
 	local key = input.KeyCode
 	if key == flyKey.Get() then
-		local on = not fly.Get()
-		fly.Set(on)
-		mods:SetFly(on)
-		ui:Notify("Fly " .. onOff(on))
+		flip("fly")
 	elseif key == noclipKey.Get() then
-		local on = not noclip.Get()
-		noclip.Set(on)
-		mods:SetNoclip(on)
-		ui:Notify("Noclip " .. onOff(on))
+		flip("noclip")
 	elseif key == freeCamKey.Get() then
 		local on = mods.CamMode ~= "Free"
 		mods:SetFreeCam(on)
@@ -459,25 +490,51 @@ local hotkeyConn = UserInputService.InputBegan:Connect(function(input, processed
 	end
 end)
 
--- Reset everything (button lives on the Extras page)
-extrasPage:AddButton("Reset All Modifiers", function()
-	mods:Reset()
-	mods:SetSprintMultiplier(1.6)
-	walk.Set(16); jump.Set(50); hip.Set(2)
-	sprint.Set(false); sprintMul.Set(160)
-	fly.Set(false); noclip.Set(false); infJump.Set(false); clickTp.Set(false)
-	gravity.Set(defaultGravity); fov.Set(defaultFov); zoom.Set(defaultZoom)
-	fullbright.Set(false); clock.Set(defaultClock)
-	freeCam.Set(false); specLabel.Text = mods:GetCameraStatus()
-	for _, entry in registry do
-		if entry.resetApply then
-			entry.value = entry.default
-			pcall(entry.control.Set, entry.default)
-			pcall(entry.apply, entry.default)
-		end
-	end
-	ui:Notify("Everything reset")
+-- LOOK: style, colors, size, motion ----------------------------------------------------
+local styleCell, accentCell, sizeCell, motionCell = settings:AddQuad("Look", "Look", { "Style", "Accent", "Size", "Motion" })
+local accent, themeDrop, fontDrop, transSlider, cornerSlider
+
+styleCell:AddDropdown("Style", ui:GetStyleNames(), ui:GetStyle(), function(name)
+	local d = ui:SetStyle(name)
+	if themeDrop then themeDrop.Set("Default") end
+	if accent then accent.Set(d.Accent) end
+	if fontDrop then fontDrop.Set(d.Font) end
+	if transSlider then transSlider.Set(math.round(d.Transparency * 100)) end
+	if cornerSlider then cornerSlider.Set(d.Corner) end
+	ui:Notify("Style: " .. name)
 end)
+themeDrop = styleCell:AddDropdown("Color Scheme", ui:GetThemeNames(), "Default", function(name)
+	accent.Set(ui:SetTheme(name)) -- the preset has its own accent, so sync the sliders
+end)
+fontDrop = styleCell:AddDropdown("Font", ui:GetFontNames(), "SourceSansBold", function(name) ui:SetFont(name) end)
+
+accent = accentCell:AddColorPicker("Accent", ui:GetAccent(), function(c) ui:SetAccent(c) end)
+
+sizeCell:AddSlider("UI Scale %", 30, 160, 60, function(v) ui:SetUserScale(v / 100) end)
+transSlider = sizeCell:AddSlider("Transparency %", 0, 70, 20, function(v) ui:SetPanelTransparency(v / 100) end)
+cornerSlider = sizeCell:AddSlider("Corner Radius", 0, 16, 16, function(v) ui:SetCornerRadius(v) end)
+
+motionCell:AddSlider("Anim Speed %", 50, 200, 100, function(v) ui:SetAnimSpeed(v / 100) end)
+motionCell:AddDropdown("Page Slide", { "Auto", "LeftToRight", "RightToLeft" }, "Auto", function(mode)
+	ui:SetSlideMode(mode)
+end)
+motionCell:AddToggle("Card Entrance", true, function(on) ui:SetEntrance(on) end)
+
+-- DOCK: where the bar sits, how thick it is, what it says -------------------------------
+local posCell, barCell, widgetCell, textCell = settings:AddQuad("Dock", "Dock", { "Position", "Bar", "Widget", "Text" })
+posCell:AddDropdown("Dock Side", ui:GetDockSides(), "Left", function(side) ui:SetDockSide(side) end)
+posCell:AddToggle("Draggable", true, function(on) ui:SetDraggable(on) end)
+posCell:AddButton("Reset Position", function() ui:ResetPosition() end)
+
+barCell:AddSlider("Thickness", 36, 100, 56, function(v) ui:SetBarSize(v) end)
+barCell:AddDropdown("Title Direction", ui:GetTitleRotations(), "Auto", function(mode) ui:SetTitleRotation(mode) end)
+
+widgetCell:AddToggle("Auto-hide", true, function(on) ui:SetAutoHide(on) end)
+widgetCell:AddSlider("Hide After (s)", 3, 60, 8, function(v) ui:SetIdleTime(v) end)
+widgetCell:AddSlider("Widget Length", 50, 200, 84, function(v) ui:SetWidgetLength(v) end)
+
+textCell:AddTextBox("Title", "Player Menu", function(text) if text ~= "" then ui:SetTitle(text) end end)
+textCell:AddTextBox("Subtitle", "v1.3", function(text) ui:SetSubtitle(text) end)
 
 -- apply the auto-load config (if one was set) once everything is built
 do
@@ -497,7 +554,6 @@ return {
 	Mods = mods,
 	Destroy = function()
 		hotkeyConn:Disconnect()
-		if topmostConn then topmostConn:Disconnect() end
 		pcall(function() visuals:Destroy() end)
 		mods:Destroy()
 		ui:Destroy()

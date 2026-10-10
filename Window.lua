@@ -6,6 +6,7 @@
 --   ui:AddTab(id, name) / ui:AddBottomTab(id, name) / tab:AddSubTab(id, name)
 --   page:AddSection / AddLabel / AddButton / AddToggle / AddSlider
 --   page:AddDropdown / AddColorPicker / AddTextBox / AddKeybind
+--   tab:AddQuad(id, name, {"Title1", ...})  -> 1-4 titled cards in a grid; returns one page per card
 --
 -- config: Name, Title, Subtitle, Transparency (0-1), ToggleKey, MinimizeKey (Enum.KeyCode),
 --         Style: "Modern" | "WindowsXP" | "WindowsVista" | "Windows11" | "Windows95" | "KDEPlasma" | "GNOME" | "macOS"
@@ -14,6 +15,7 @@
 --         TitleRotation: "Auto" | "Up" | "Down" (Left/Right docks only)
 --         SlideMode: "Auto" | "LeftToRight" | "RightToLeft",
 --         Theme (preset name), Accent (Color3), CornerRadius (px), Font (name), AnimSpeed
+--         Entrance (true): cards rise into place when a page opens
 local import = ...
 
 local Players = game:GetService("Players")
@@ -106,6 +108,12 @@ local function buildSidebar(self, parent)
 	})
 	self.TabListLayout = New("UIListLayout", { Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder, Parent = list })
 	self.TabList = list
+	-- a top tab row has no scroll bar: the mouse wheel glides it sideways instead
+	list.InputChanged:Connect(function(input)
+		if input.UserInputType ~= Enum.UserInputType.MouseWheel or not State.Skin.Horizontal then return end
+		local x = math.max(0, list.CanvasPosition.X - input.Position.Z * 110)
+		Anim.Tween(list, 0.18, { CanvasPosition = Vector2.new(x, 0) }, Enum.EasingStyle.Quint)
+	end)
 end
 
 local function buildContent(self, parent)
@@ -196,6 +204,7 @@ function GuiUI.new(config)
 	self.Draggable = true
 	self.Offset = 0
 	self.AutoHide = config.AutoHide ~= false
+	self.Entrance = config.Entrance ~= false
 	self.IdleTime = math.clamp(config.IdleTime or 8, 2, 120)
 	self.WidgetLen = math.clamp(config.WidgetLength or WIDGET_LEN, 50, 200)
 	self._lastActive = os.clock()
@@ -394,14 +403,106 @@ function GuiUI:SelectTab(id)
 	self.MainHost:Show(id, dir)
 	self.HeaderHost:Show(id, dir)
 	self.TabLabel.Text = tab.Name
+	if not tab.IsBottom then self:_revealTab(tab) end
+	self:_playEntrance(tab.Subs[tab.CurrentSub])
 end
 
-function Tab:AddSubTab(id, name)
+-- glides the tab list so the chosen tab sits in the middle (matters once there are many tabs)
+function GuiUI:_revealTab(tab)
+	local list = self.TabList
+	local hz = State.Skin.Horizontal == true
+	local S = Theme.Size
+	local item = hz and 120 or S.Tab
+	local gap = 8
+	local start = (tab.Order - 1) * (item + gap) + (hz and 8 or 8)
+	local scale = math.max(self.UIScale.Scale, 0.01)
+	local window = (hz and list.AbsoluteWindowSize.X or list.AbsoluteWindowSize.Y) / scale
+	local target = math.max(0, start + item / 2 - window / 2)
+	Anim.Tween(list, 0.35, { CanvasPosition = hz and Vector2.new(target, 0) or Vector2.new(0, target) }, Enum.EasingStyle.Quint)
+end
+
+-- cards on a quad page rise into place one after another (a newer call replaces an older one)
+function GuiUI:_playEntrance(sub)
+	if not self.Entrance then return end
+	if not sub then
+		local tab = self.Tabs[self.CurrentTab]
+		sub = tab and tab.Subs[tab.CurrentSub]
+	end
+	if not (sub and sub.Quad) then return end
+	sub._enter += 1
+	local token = sub._enter
+	for i, holder in sub.Holders do
+		holder.Position = UDim2.fromOffset(0, 16)
+		task.delay((i - 1) * 0.05, function()
+			if token ~= sub._enter or holder.Parent == nil then return end
+			Anim.Tween(holder, 0.45, { Position = UDim2.new() }, Enum.EasingStyle.Quint)
+		end)
+	end
+end
+
+local function subButton(self, id, name)
 	local S = Theme.Size
 	self.SubCount += 1
 	local btn = Button(self.Bar, "Sub_" .. id, UDim2.new(), UDim2.fromOffset(S.SmallW, S.SmallH), name,
 		fieldOpts({ Depth = 3, TextSize = Theme.FontSize.Small, Kind = "sub" }), function() self:SelectSub(id) end)
 	btn.Holder.LayoutOrder = self.SubCount
+	return btn
+end
+
+-- where card i of n sits inside the page (1 = full page, 2 = side by side, 3 = two on top + one wide, 4 = 2x2)
+local QUAD_GAP, QUAD_TITLE = 10, 26
+local function quadRect(n, i)
+	local g = QUAD_GAP / 2
+	if n <= 1 then return UDim2.new(), UDim2.fromScale(1, 1) end
+	if n == 2 then return UDim2.new((i - 1) * 0.5, (i - 1) * g, 0, 0), UDim2.new(0.5, -g, 1, 0) end
+	if n == 3 and i == 3 then return UDim2.new(0, 0, 0.5, g), UDim2.new(1, 0, 0.5, -g) end
+	local col, row = (i - 1) % 2, (i - 1) // 2
+	return UDim2.new(col * 0.5, col * g, row * 0.5, row * g), UDim2.new(0.5, -g, 0.5, -g)
+end
+
+-- A page made of 1 - 4 titled cards. Each card is a normal page (AddToggle, AddSlider, ...) that scrolls
+-- on its own if it fills up. Returns the cards in order:
+--   local a, b, c, d = tab:AddQuad("Speed", "Speed", { "Walk", "Jump", "Sprint", "Body" })
+function Tab:AddQuad(id, name, titles)
+	titles = titles or {}
+	local n = math.clamp(#titles, 1, 4)
+	local btn = subButton(self, id, name)
+
+	local frame = self.SubHost:Add(id)
+	local container = New("Frame", { Name = "Container", BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), Parent = frame })
+	New("UIPadding", { PaddingTop = UDim.new(0, 10), PaddingBottom = UDim.new(0, 10), PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10), Parent = container })
+
+	local cells, holders = {}, {}
+	for i = 1, n do
+		local pos, size = quadRect(n, i)
+		local slot = New("Frame", { Name = "Slot" .. i, BackgroundTransparency = 1, Position = pos, Size = size, Parent = container })
+		local holder, face = Shadowed(slot, titles[i], "Frame", UDim2.new(), UDim2.fromScale(1, 1), "Field", 3, nil, "field")
+		Label(face, string.upper(titles[i]), {
+			Size = UDim2.new(1, 0, 0, QUAD_TITLE), Align = Enum.TextXAlignment.Left,
+			TextSize = Theme.FontSize.Small, ColorKey = "Active", PadX = 10,
+		})
+		local scroll = New("ScrollingFrame", {
+			Name = "Items", BackgroundTransparency = 1, BorderSizePixel = 0,
+			Position = UDim2.fromOffset(0, QUAD_TITLE), Size = UDim2.new(1, 0, 1, -QUAD_TITLE - 4),
+			CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollBarThickness = 3, Parent = face,
+		})
+		New("UIPadding", { PaddingTop = UDim.new(0, 2), PaddingBottom = UDim.new(0, 6), PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 10), Parent = scroll })
+		New("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder, Parent = scroll })
+		cells[i] = setmetatable({ UI = self.UI, Id = id .. "_" .. i, Name = titles[i], Container = scroll, Count = 0 }, Page)
+		holders[i] = holder
+	end
+
+	local sub = { UI = self.UI, Id = id, Name = name, Order = self.SubCount, Button = btn, Container = container,
+		Quad = true, Cells = cells, Holders = holders, _enter = 0 }
+	self.Subs[id] = sub
+	for _, s in self.Subs do s.Button.Holder.Visible = self.SubCount > 1 end
+	if not self.CurrentSub then self:SelectSub(id) end
+	return table.unpack(cells)
+end
+
+function Tab:AddSubTab(id, name)
+	local S = Theme.Size
+	local btn = subButton(self, id, name)
 
 	local frame = self.SubHost:Add(id)
 	local container = New("ScrollingFrame", {
@@ -415,6 +516,8 @@ function Tab:AddSubTab(id, name)
 		UI = self.UI, Id = id, Name = name, Order = self.SubCount, Button = btn, Container = container, Count = 0,
 	}, Page)
 	self.Subs[id] = sub
+	-- a tab with a single page needs no page button (the tab name already says it)
+	for _, s in self.Subs do s.Button.Holder.Visible = self.SubCount > 1 end
 	if not self.CurrentSub then self:SelectSub(id) end
 	return sub
 end
@@ -427,6 +530,7 @@ function Tab:SelectSub(id)
 	self.CurrentSub = id
 	new.Button.SetActive(true)
 	self.SubHost:Show(id, self.UI:_dir(old and old.Order or 0, new.Order))
+	self.UI:_playEntrance(new)
 end
 
 -------------------------------------------------------------------------------

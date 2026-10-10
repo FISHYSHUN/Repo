@@ -64,7 +64,15 @@ return function(Page)
 		local dot = New("Frame", { Name = "Dot", AnchorPoint = Vector2.new(0.5, 0.5), BorderSizePixel = 0, Parent = ind })
 		local dotCorner = New("UICorner", { Parent = dot })
 
-		function api.Refresh()
+		-- instant = no animation (first build); otherwise every change glides
+		function api.Refresh(instant)
+			local function go(inst, props, time, style)
+				if instant then
+					for k, v in props do inst[k] = v end
+				else
+					Anim.Tween(inst, time or 0.14, props, style)
+				end
+			end
 			local mode = State.Skin.Toggle
 			if mode == "Fill" then
 				btn.SetText(text .. ": " .. (state and "ON" or "OFF"))
@@ -85,23 +93,27 @@ return function(Page)
 				ind.Size = UDim2.fromOffset(16, 16)
 				ind.BackgroundColor3 = Theme.Content
 				indCorner.CornerRadius = UDim.new(0, math.floor(Theme.Corner * 0.3 + 0.5))
-				dot.Size = UDim2.fromOffset(8, 8)
 				dot.Position = UDim2.fromScale(0.5, 0.5)
 				dot.BackgroundColor3 = Theme.Active
-				dot.BackgroundTransparency = state and 0 or 1
 				dotCorner.CornerRadius = UDim.new(0, math.floor(Theme.Corner * 0.15 + 0.5))
+				-- the mark pops in / shrinks away
+				go(dot, {
+					Size = state and UDim2.fromOffset(8, 8) or UDim2.fromOffset(0, 0),
+					BackgroundTransparency = state and 0 or 1,
+				}, 0.16, Enum.EasingStyle.Back)
 				btn.Pad.PaddingLeft, btn.Pad.PaddingRight = UDim.new(0, 34), UDim.new(0, 4)
 			else -- Switch
 				ind.AnchorPoint = Vector2.new(1, 0.5)
 				ind.Position = UDim2.new(1, -10, 0.5, 0)
 				ind.Size = UDim2.fromOffset(38, 20)
-				ind.BackgroundColor3 = state and Theme.Active or Theme.Track
 				indCorner.CornerRadius = UDim.new(0, 10)
 				dot.Size = UDim2.fromOffset(14, 14)
 				dot.BackgroundColor3 = Theme.Knob
 				dot.BackgroundTransparency = 0
 				dotCorner.CornerRadius = UDim.new(0, 7)
-				Anim.Tween(dot, 0.12, { Position = UDim2.new(state and 1 or 0, state and -10 or 10, 0.5, 0) })
+				-- track color fades, the knob slides across
+				go(ind, { BackgroundColor3 = state and Theme.Active or Theme.Track }, 0.16)
+				go(dot, { Position = UDim2.new(state and 1 or 0, state and -10 or 10, 0.5, 0) }, 0.18, Enum.EasingStyle.Back)
 				btn.Pad.PaddingLeft, btn.Pad.PaddingRight = UDim.new(0, 10), UDim.new(0, 56)
 			end
 		end
@@ -109,7 +121,7 @@ return function(Page)
 		function api.Set(v) state = v; api.Refresh() end
 		function api.Get() return state end
 		table.insert(Toggles, api)
-		api.Refresh()
+		api.Refresh(true)
 		return api
 	end
 
@@ -131,6 +143,7 @@ return function(Page)
 		local knobCorner = New("UICorner", { Parent = knob })
 		local knobStroke = New("UIStroke", { ApplyStrokeMode = Enum.ApplyStrokeMode.Border, Parent = knob })
 
+		local knobBase = Vector2.zero
 		local function restyle()
 			local sl = State.Skin.Slider
 			local h = sl.H
@@ -143,6 +156,7 @@ return function(Page)
 			trackStroke.Color = Theme.Edge
 			knob.Visible = sl.KW ~= nil
 			if sl.KW then
+				knobBase = Vector2.new(sl.KW, sl.KH)
 				knob.Size = UDim2.fromOffset(sl.KW, sl.KH)
 				knobCorner.CornerRadius = UDim.new(0, sl.KRound and 99 or math.min(math.floor(Theme.Corner * 0.4 + 0.5), 4))
 				knobStroke.Color = Theme.Edge
@@ -151,14 +165,25 @@ return function(Page)
 		table.insert(Sliders, { Track = track, Restyle = restyle })
 		restyle()
 
+		-- knob (or the fill, on styles without one) swells while you hover / drag
+		local hovering, dragging = false, false
+		local function swell()
+			local on = hovering or dragging
+			if knobBase.X > 0 then
+				Anim.Tween(knob, 0.14, { Size = UDim2.fromOffset(knobBase.X + (on and 4 or 0), knobBase.Y + (on and 4 or 0)) }, Enum.EasingStyle.Back)
+			end
+		end
+		track.MouseEnter:Connect(function() hovering = true; swell() end)
+		track.MouseLeave:Connect(function() hovering = false; swell() end)
+
 		local value = default
 		local function set(v, fire)
 			v = math.clamp(math.round(v), min, max)
 			value = v
 			label.Text = text .. ": " .. v
 			local frac = (v - min) / (max - min)
-			Anim.Tween(fill, 0.05, { Size = UDim2.fromScale(frac, 1) })
-			Anim.Tween(knob, 0.05, { Position = UDim2.new(frac, 0, 0.5, 0) })
+			Anim.Tween(fill, 0.08, { Size = UDim2.fromScale(frac, 1) })
+			Anim.Tween(knob, 0.08, { Position = UDim2.new(frac, 0, 0.5, 0) })
 			if fire and callback then callback(v) end
 		end
 		local function fromX(x)
@@ -166,10 +191,10 @@ return function(Page)
 			set(min + (max - min) * t, true)
 		end
 
-		local dragging = false
 		local function down(input)
 			if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 				dragging = true
+				swell()
 				fromX(input.Position.X)
 			end
 		end
@@ -182,7 +207,10 @@ return function(Page)
 		end)
 		UserInputService.InputEnded:Connect(function(input)
 			if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-				dragging = false
+				if dragging then
+					dragging = false
+					swell()
+				end
 			end
 		end)
 

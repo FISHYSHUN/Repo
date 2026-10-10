@@ -9,6 +9,7 @@ local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 local Lighting = game:GetService("Lighting")
 local StatsService = game:GetService("Stats")
+local TweenService = game:GetService("TweenService")
 
 local PlayerMods = {}
 PlayerMods.__index = PlayerMods
@@ -23,6 +24,11 @@ local function camera()
 	return Workspace.CurrentCamera
 end
 
+-- 0 - 100 "smoothing" slider -> how fast things catch up (higher rate = snappier)
+local function smoothRate(pct)
+	return 24 - 0.21 * math.clamp(pct, 0, 100)
+end
+
 local function unbind(name)
 	pcall(RunService.UnbindFromRenderStep, RunService, name)
 end
@@ -35,6 +41,12 @@ function PlayerMods.new()
 		SprintMultiplier = 1.6,
 		FreeCamSpeed = 50,
 		FreeCamSensitivity = 0.3, -- degrees per mouse pixel
+		FreeCamSmooth = 50, -- 0 = instant, 100 = very floaty
+		FlySmooth = 60,
+		FlyBoost = true, -- hold Left Shift while flying for 2x speed
+		Glide = false, -- teleports slide to the target instead of snapping
+		GlideTime = 0.45, -- seconds for a long glide
+		FallSpeed = 30, -- slow fall: max downward speed (studs/s)
 	} -- tuning values (kept on Reset)
 	self.Values = {} -- user-chosen values (re-applied on respawn)
 	self.Defaults = {
@@ -45,6 +57,11 @@ function PlayerMods.new()
 	}
 	self.Flying, self.Noclip, self.InfiniteJump = false, false, false
 	self.Fullbright, self.ClickTeleport, self.SprintEnabled = false, false, false
+	self.SlowFall, self.FreezeTime, self.NoFog = false, false, false
+	self.Persist, self.AntiAFK = false, false
+	self._slots = {} -- saved spots: [1..4] = CFrame
+	self._started = os.clock()
+	self._eases = setmetatable({}, { __mode = "k" })
 
 	-- camera state: "Off" | "Free" | "Spectate"
 	self.CamMode = "Off"
@@ -62,6 +79,7 @@ function PlayerMods.new()
 		ShowFOV = false,
 		TeamCheck = true,
 		WallCheck = false,
+		Priority = "Cursor", -- "Cursor" | "Distance" | "Health"
 	}
 	self._trackTarget = nil
 	self._fovCircle = nil
@@ -175,15 +193,73 @@ function PlayerMods:Apply()
 	if self.Values.MaxZoom then self.Player.CameraMaxZoomDistance = self.Values.MaxZoom end
 end
 
+-- Smoothly tweens one property (a newer tween on the same property replaces the old one)
+function PlayerMods:_ease(inst, prop, value, time)
+	if not inst then return end
+	local bucket = self._eases[inst]
+	if not bucket then
+		bucket = {}
+		self._eases[inst] = bucket
+	end
+	if bucket[prop] then bucket[prop]:Cancel() end
+	local tween = TweenService:Create(inst, TweenInfo.new(time or 0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { [prop] = value })
+	bucket[prop] = tween
+	tween:Play()
+end
+
+function PlayerMods:_cancelEase(inst, prop)
+	local bucket = self._eases[inst]
+	if bucket and bucket[prop] then
+		bucket[prop]:Cancel()
+		bucket[prop] = nil
+	end
+end
+
 -- Simple value modifiers -------------------------------------------------------
 function PlayerMods:SetWalkSpeed(v) self.Values.WalkSpeed = v; self:Apply() end
 function PlayerMods:SetJumpPower(v) self.Values.JumpPower = v; self:Apply() end
 function PlayerMods:SetGravity(v) self.Values.Gravity = v; self:Apply() end
-function PlayerMods:SetFOV(v) self.Values.FOV = v; self:Apply() end
+function PlayerMods:SetFOV(v) self.Values.FOV = v; self:_ease(camera(), "FieldOfView", v, 0.18) end
 function PlayerMods:SetHipHeight(v) self.Values.HipHeight = v; self:Apply() end
 function PlayerMods:SetMaxZoom(v) self.Values.MaxZoom = v; self:Apply() end
-function PlayerMods:SetTimeOfDay(v) self.Values.ClockTime = v; self:Apply() end
+function PlayerMods:SetTimeOfDay(v)
+	self.Values.ClockTime = v
+	if self.FreezeTime then
+		self._frozenClock = v
+		Lighting.ClockTime = v
+	else
+		self:_ease(Lighting, "ClockTime", v, 0.25)
+	end
+end
 function PlayerMods:SetFlySpeed(v) self.Settings.FlySpeed = v end
+function PlayerMods:SetFlySmooth(v) self.Settings.FlySmooth = v end
+function PlayerMods:SetFlyBoost(on) self.Settings.FlyBoost = on end
+function PlayerMods:SetFallSpeed(v) self.Settings.FallSpeed = v end
+function PlayerMods:SetGlide(on) self.Settings.Glide = on end
+function PlayerMods:SetGlideTime(seconds) self.Settings.GlideTime = seconds end
+
+-- Puts one value back to what the game gave this character / world (and eases it there)
+function PlayerMods:ResetValue(key)
+	self.Values[key] = nil
+	local hum, d = self:_humanoid(), self._charDefaults
+	if key == "WalkSpeed" and hum then
+		hum.WalkSpeed = d and d.WalkSpeed or DEFAULT_WALKSPEED
+	elseif key == "JumpPower" and hum then
+		hum.UseJumpPower = d and d.UseJumpPower or true
+		hum.JumpPower = d and d.JumpPower or DEFAULT_JUMPPOWER
+	elseif key == "HipHeight" and hum and d then
+		hum.HipHeight = d.HipHeight
+	elseif key == "Gravity" then
+		Workspace.Gravity = self.Defaults.Gravity
+	elseif key == "FOV" then
+		self:_ease(camera(), "FieldOfView", self.Defaults.FOV, 0.25)
+	elseif key == "ClockTime" then
+		if self.FreezeTime then self._frozenClock = self.Defaults.ClockTime end
+		self:_ease(Lighting, "ClockTime", self.Defaults.ClockTime, 0.3)
+	elseif key == "MaxZoom" then
+		self.Player.CameraMaxZoomDistance = self.Defaults.MaxZoom
+	end
+end
 
 function PlayerMods:SetInfiniteJump(enabled)
 	self.InfiniteJump = enabled
@@ -237,23 +313,92 @@ function PlayerMods:_teleportToMouse()
 		-- stand ON the surface (hip height + half the root) instead of a flat +3 that can clip into floors
 		local lift = (hum and hum.HipHeight or 2) + hrp.Size.Y / 2 + 0.5
 		local rotation = hrp.CFrame - hrp.CFrame.Position -- keep facing direction
-		hrp.CFrame = CFrame.new(result.Position + Vector3.new(0, lift, 0)) * rotation
+		self:TeleportTo(CFrame.new(result.Position + Vector3.new(0, lift, 0)) * rotation)
 	end
 end
 
--- Saved position ------------------------------------------------------------------
-function PlayerMods:SavePosition()
+-- Teleporting ---------------------------------------------------------------------
+-- Every teleport goes through here: instant, or a smooth glide when Settings.Glide is on.
+-- The spot you left is remembered so UndoTeleport can take you back.
+function PlayerMods:TeleportTo(cf)
 	local hrp = self:_root()
 	if not hrp then return false end
-	self._saved = hrp.CFrame
+	self._undoCFrame = hrp.CFrame
+
+	if not self._glide then self._glideAnchored = hrp.Anchored end
+	if self._glide then self._glide:Cancel() end
+
+	if not self.Settings.Glide then
+		self._glide = nil
+		hrp.Anchored = self._glideAnchored or false
+		hrp.CFrame = cf
+		hrp.AssemblyLinearVelocity = Vector3.zero
+		return true
+	end
+
+	local dist = (cf.Position - hrp.Position).Magnitude
+	local time = math.max(0.12, self.Settings.GlideTime * math.clamp(dist / 150, 0.35, 1))
+	local tween = TweenService:Create(hrp, TweenInfo.new(time, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), { CFrame = cf })
+	self._glide = tween
+	hrp.Anchored = true
+	tween.Completed:Once(function()
+		if self._glide == tween then self._glide = nil end
+		if hrp.Parent and not self._glide then
+			hrp.Anchored = self._glideAnchored or false
+			hrp.AssemblyLinearVelocity = Vector3.zero
+		end
+	end)
+	tween:Play()
 	return true
 end
 
-function PlayerMods:TeleportToSaved()
+function PlayerMods:UndoTeleport()
+	if not self._undoCFrame then return false end
+	return self:TeleportTo(self._undoCFrame) -- the spot you leave becomes the new undo target
+end
+
+-- Saved spots (slots 1 - 4) ----------------------------------------------------------
+function PlayerMods:SaveSlot(i)
 	local hrp = self:_root()
-	if not (hrp and self._saved) then return false end
-	hrp.CFrame = self._saved
+	if not hrp then return false end
+	self._slots[i] = hrp.CFrame
 	return true
+end
+
+function PlayerMods:GoSlot(i)
+	local cf = self._slots[i]
+	if not cf then return false end
+	return self:TeleportTo(cf)
+end
+
+function PlayerMods:GetSlot(i)
+	local cf = self._slots[i]
+	return cf and cf.Position or nil
+end
+
+-- (kept for older code: slot 1)
+function PlayerMods:SavePosition() return self:SaveSlot(1) end
+function PlayerMods:TeleportToSaved() return self:GoSlot(1) end
+
+-- Teleport next to a player (a few studs behind them, facing them)
+function PlayerMods:TeleportToPlayer(player)
+	local char = player and player.Character
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	if not root then return false end
+	local pos = (root.CFrame * CFrame.new(0, 0, 4)).Position
+	return self:TeleportTo(CFrame.lookAt(pos, root.Position))
+end
+
+-- dir = 1 / -1: hop through everyone else, alphabetical
+function PlayerMods:TeleportStep(dir)
+	local list = self:_otherPlayers()
+	if #list == 0 then return nil end
+	local index = table.find(list, self._tpTarget)
+	index = index and (((index - 1 + dir) % #list) + 1) or (dir > 0 and 1 or #list)
+	local target = list[index]
+	self._tpTarget = target
+	if self:TeleportToPlayer(target) then return target end
+	return nil
 end
 
 function PlayerMods:Respawn()
@@ -261,24 +406,138 @@ function PlayerMods:Respawn()
 	if hum then hum.Health = 0 end
 end
 
--- Fullbright --------------------------------------------------------------------
+-- Fullbright (fades in / out) ---------------------------------------------------
+local BRIGHT = Color3.fromRGB(178, 178, 178)
+
 function PlayerMods:SetFullbright(enabled)
 	if enabled == self.Fullbright then return end
 	self.Fullbright = enabled
 	if enabled then
 		self._lighting = {
 			Brightness = Lighting.Brightness, GlobalShadows = Lighting.GlobalShadows,
-			Ambient = Lighting.Ambient, OutdoorAmbient = Lighting.OutdoorAmbient, FogEnd = Lighting.FogEnd,
+			Ambient = Lighting.Ambient, OutdoorAmbient = Lighting.OutdoorAmbient,
 		}
-		Lighting.Brightness = 2
 		Lighting.GlobalShadows = false
-		Lighting.Ambient = Color3.fromRGB(178, 178, 178)
-		Lighting.OutdoorAmbient = Color3.fromRGB(178, 178, 178)
-		Lighting.FogEnd = 100000
+		self:_ease(Lighting, "Brightness", 2, 0.4)
+		self:_ease(Lighting, "Ambient", BRIGHT, 0.4)
+		self:_ease(Lighting, "OutdoorAmbient", BRIGHT, 0.4)
 	elseif self._lighting then
-		for prop, value in self._lighting do Lighting[prop] = value end
+		local saved = self._lighting
 		self._lighting = nil
+		Lighting.GlobalShadows = saved.GlobalShadows
+		self:_ease(Lighting, "Brightness", saved.Brightness, 0.4)
+		self:_ease(Lighting, "Ambient", saved.Ambient, 0.4)
+		self:_ease(Lighting, "OutdoorAmbient", saved.OutdoorAmbient, 0.4)
 	end
+end
+
+-- No fog: pushes the fog away and clears the Atmosphere haze --------------------------
+function PlayerMods:SetNoFog(enabled)
+	if enabled == self.NoFog then return end
+	self.NoFog = enabled
+	if enabled then
+		self._fog = { FogStart = Lighting.FogStart, FogEnd = Lighting.FogEnd }
+		Lighting.FogEnd = 100000
+		local atmos = Lighting:FindFirstChildOfClass("Atmosphere")
+		if atmos then
+			self._fog.Atmosphere, self._fog.Density, self._fog.Haze = atmos, atmos.Density, atmos.Haze
+			atmos.Density, atmos.Haze = 0, 0
+		end
+	elseif self._fog then
+		local f = self._fog
+		self._fog = nil
+		Lighting.FogStart, Lighting.FogEnd = f.FogStart, f.FogEnd
+		if f.Atmosphere and f.Atmosphere.Parent then
+			f.Atmosphere.Density, f.Atmosphere.Haze = f.Density, f.Haze
+		end
+	end
+end
+
+local function dropConn(self, name)
+	if self._conns[name] then
+		self._conns[name]:Disconnect()
+		self._conns[name] = nil
+	end
+end
+
+-- Freeze time: holds the clock where it is (the game's day / night cycle stops) ------------
+function PlayerMods:SetFreezeTime(enabled)
+	self.FreezeTime = enabled
+	dropConn(self, "FreezeTime")
+	if not enabled then return end
+	self:_cancelEase(Lighting, "ClockTime")
+	self._frozenClock = self.Values.ClockTime or Lighting.ClockTime
+	Lighting.ClockTime = self._frozenClock
+	self._conns.FreezeTime = RunService.Heartbeat:Connect(function()
+		Lighting.ClockTime = self._frozenClock
+	end)
+end
+
+-- Slow fall: caps how fast you can fall -------------------------------------------------------
+function PlayerMods:SetSlowFall(enabled)
+	self.SlowFall = enabled
+	dropConn(self, "SlowFall")
+	if not enabled then return end
+	self._conns.SlowFall = RunService.Heartbeat:Connect(function()
+		local hrp = self:_root()
+		if not hrp or self.Flying then return end
+		local v = hrp.AssemblyLinearVelocity
+		local limit = -self.Settings.FallSpeed
+		if v.Y < limit then hrp.AssemblyLinearVelocity = Vector3.new(v.X, limit, v.Z) end
+	end)
+end
+
+-- Keep values: some games keep resetting WalkSpeed / Gravity ... this puts your values back -
+function PlayerMods:_enforce()
+	local v = self.Values
+	local hum = self:_humanoid()
+	if hum then
+		local speed = v.WalkSpeed
+		if self._sprinting then
+			speed = (speed or self._preSprint or DEFAULT_WALKSPEED) * self.Settings.SprintMultiplier
+		end
+		if speed and math.abs(hum.WalkSpeed - speed) > 0.01 then hum.WalkSpeed = speed end
+		if v.JumpPower and (not hum.UseJumpPower or math.abs(hum.JumpPower - v.JumpPower) > 0.01) then
+			hum.UseJumpPower = true
+			hum.JumpPower = v.JumpPower
+		end
+		if v.HipHeight and math.abs(hum.HipHeight - v.HipHeight) > 0.01 then hum.HipHeight = v.HipHeight end
+	end
+	if v.Gravity and math.abs(Workspace.Gravity - v.Gravity) > 0.01 then Workspace.Gravity = v.Gravity end
+	if v.MaxZoom and self.Player.CameraMaxZoomDistance ~= v.MaxZoom then self.Player.CameraMaxZoomDistance = v.MaxZoom end
+end
+
+function PlayerMods:SetPersist(enabled)
+	self.Persist = enabled
+	dropConn(self, "Persist")
+	if not enabled then return end
+	local clock = 0
+	self._conns.Persist = RunService.Heartbeat:Connect(function(dt)
+		clock += dt
+		if clock < 0.25 then return end
+		clock = 0
+		self:_enforce()
+	end)
+end
+
+-- Anti-AFK: answers Roblox's idle check so you are not kicked after 20 minutes ----------------
+function PlayerMods:SetAntiAFK(enabled)
+	self.AntiAFK = enabled
+	dropConn(self, "AntiAFK")
+	if not enabled then return end
+	self._conns.AntiAFK = self.Player.Idled:Connect(function()
+		pcall(function()
+			local vu = game:GetService("VirtualUser")
+			vu:CaptureController()
+			vu:ClickButton2(Vector2.zero)
+		end)
+	end)
+end
+
+function PlayerMods:Rejoin()
+	return (pcall(function()
+		game:GetService("TeleportService"):TeleportToPlaceInstance(game.PlaceId, game.JobId, self.Player)
+	end))
 end
 
 -- Live stats (for a HUD / info page) -------------------------------------------
@@ -287,12 +546,20 @@ function PlayerMods:GetStats()
 	pcall(function()
 		ping = StatsService.Network.ServerStatsItem["Data Ping"]:GetValue()
 	end)
-	local hrp = self:_root()
+	local memory = 0
+	pcall(function() memory = StatsService:GetTotalMemoryUsageMb() end)
+	local hrp, hum = self:_root(), self:_humanoid()
 	return {
 		FPS = math.round(self._fps),
 		Ping = math.round(ping),
+		Memory = math.round(memory),
 		Position = hrp and hrp.Position or Vector3.zero,
 		Speed = hrp and math.round(hrp.AssemblyLinearVelocity.Magnitude) or 0,
+		Health = hum and math.round(hum.Health) or 0,
+		MaxHealth = hum and math.round(hum.MaxHealth) or 0,
+		Players = #Players:GetPlayers(),
+		MaxPlayers = Players.MaxPlayers,
+		Session = math.floor(os.clock() - self._started),
 	}
 end
 
@@ -400,8 +667,12 @@ function PlayerMods:SetFly(enabled)
 			if key(UserInputService, Enum.KeyCode.Space) then dir += Vector3.yAxis end
 			if key(UserInputService, Enum.KeyCode.LeftControl) then dir -= Vector3.yAxis end
 		end
-		local goal = dir.Magnitude > 0 and dir.Unit * self.Settings.FlySpeed or Vector3.zero
-		current = current:Lerp(goal, math.clamp(dt * 12, 0, 1))
+		local speed = self.Settings.FlySpeed
+		if active and self.Settings.FlyBoost and UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then
+			speed *= 2
+		end
+		local goal = dir.Magnitude > 0 and dir.Unit * speed or Vector3.zero
+		current = current:Lerp(goal, 1 - math.exp(-dt * smoothRate(self.Settings.FlySmooth)))
 		velocity.VectorVelocity = current
 
 		if active then
@@ -511,6 +782,7 @@ end
 -- Shift = fast, Ctrl = slow --------------------------------------------------------
 function PlayerMods:SetFreeCamSpeed(v) self.Settings.FreeCamSpeed = v end
 function PlayerMods:SetFreeCamSensitivity(v) self.Settings.FreeCamSensitivity = v end
+function PlayerMods:SetFreeCamSmooth(v) self.Settings.FreeCamSmooth = v end
 
 function PlayerMods:SetFreeCam(enabled)
 	if not enabled then
@@ -522,7 +794,7 @@ function PlayerMods:SetFreeCam(enabled)
 	self:_enterCamMode("Free")
 	local cam = camera()
 	local pitch, yaw = cam.CFrame:ToOrientation()
-	self._free = { Pos = cam.CFrame.Position, Pitch = pitch, Yaw = yaw, Vel = Vector3.zero }
+	self._free = { Pos = cam.CFrame.Position, Pitch = pitch, Yaw = yaw, TPitch = pitch, TYaw = yaw, Vel = Vector3.zero }
 	cam.CameraType = Enum.CameraType.Scriptable
 	RunService:BindToRenderStep(FREECAM_STEP, CAMERA_PRIORITY, function(dt)
 		self:_stepFreeCam(dt)
@@ -544,11 +816,16 @@ function PlayerMods:_stepFreeCam(dt)
 		UserInputService.MouseBehavior = Enum.MouseBehavior.LockCurrentPosition
 		local delta = UserInputService:GetMouseDelta()
 		local sens = math.rad(self.Settings.FreeCamSensitivity)
-		f.Yaw -= delta.X * sens
-		f.Pitch = math.clamp(f.Pitch - delta.Y * sens, math.rad(-89), math.rad(89))
+		f.TYaw -= delta.X * sens
+		f.TPitch = math.clamp(f.TPitch - delta.Y * sens, math.rad(-89), math.rad(89))
 	else
 		UserInputService.MouseBehavior = Enum.MouseBehavior.Default
 	end
+
+	-- the view eases toward where the mouse pointed (Smoothing = 0 follows instantly)
+	local lookAlpha = 1 - math.exp(-dt * (40 - 0.35 * self.Settings.FreeCamSmooth))
+	f.Yaw += (f.TYaw - f.Yaw) * lookAlpha
+	f.Pitch += (f.TPitch - f.Pitch) * lookAlpha
 
 	local rot = CFrame.fromOrientation(f.Pitch, f.Yaw, 0)
 
@@ -572,7 +849,7 @@ function PlayerMods:_stepFreeCam(dt)
 	end
 
 	local goal = move.Magnitude > 0 and move.Unit * speed or Vector3.zero
-	f.Vel = f.Vel:Lerp(goal, math.clamp(dt * 12, 0, 1)) -- smooth start / stop
+	f.Vel = f.Vel:Lerp(goal, 1 - math.exp(-dt * smoothRate(self.Settings.FreeCamSmooth))) -- smooth start / stop
 	f.Pos += f.Vel * dt
 
 	cam.CFrame = CFrame.new(f.Pos) * rot
@@ -591,6 +868,7 @@ function PlayerMods:FocusFreeCam(player)
 	local cf = CFrame.lookAt(from.Position, root.Position + Vector3.new(0, 1.5, 0))
 	local pitch, yaw = cf:ToOrientation()
 	f.Pos, f.Pitch, f.Yaw, f.Vel = cf.Position, pitch, yaw, Vector3.zero
+	f.TPitch, f.TYaw = pitch, yaw
 	return true
 end
 
@@ -761,7 +1039,7 @@ function PlayerMods:_lineClear(cam, part)
 end
 
 function PlayerMods:_pickTrackTarget(cam, mouse)
-	local best, bestDist
+	local best, bestScore
 	for _, p in Players:GetPlayers() do
 		if self:_trackable(p) then
 			local part = self:_trackPart(p)
@@ -769,9 +1047,16 @@ function PlayerMods:_pickTrackTarget(cam, mouse)
 				local v, onScreen = cam:WorldToViewportPoint(part.Position)
 				if onScreen then
 					local d = (Vector2.new(v.X, v.Y) - mouse).Magnitude
-					if d <= self.Track.FOV and (not bestDist or d < bestDist)
-						and (not self.Track.WallCheck or self:_lineClear(cam, part)) then
-						best, bestDist = p, d
+					if d <= self.Track.FOV and (not self.Track.WallCheck or self:_lineClear(cam, part)) then
+						-- lower score wins
+						local score = d
+						if self.Track.Priority == "Distance" then
+							score = (part.Position - cam.CFrame.Position).Magnitude
+						elseif self.Track.Priority == "Health" then
+							local hum = p.Character:FindFirstChildOfClass("Humanoid")
+							score = hum and hum.Health or math.huge
+						end
+						if not bestScore or score < bestScore then best, bestScore = p, score end
 					end
 				end
 			end
@@ -784,7 +1069,7 @@ function PlayerMods:_hideFovCircle()
 	if self._fovCircle then self._fovCircle.Visible = false end
 end
 
-function PlayerMods:_drawFovCircle(mouse)
+function PlayerMods:_drawFovCircle(mouse, dt)
 	if not (self.Track.ShowFOV and HAS_DRAWING) then
 		self:_hideFovCircle()
 		return
@@ -797,6 +1082,13 @@ function PlayerMods:_drawFovCircle(mouse)
 		c.Color = Color3.new(1, 1, 1)
 		self._fovCircle = c
 	end
+	-- the ring warms up while a target is locked and relaxes when it is released
+	local goal = self._trackTarget and 1 or 0
+	local lock = self._lock or 0
+	lock += (goal - lock) * (1 - math.exp(-(dt or 0.016) * 14))
+	self._lock = lock
+	self._fovCircle.Color = Color3.new(1, 1, 1):Lerp(Color3.fromRGB(90, 255, 130), lock)
+	self._fovCircle.Thickness = 1 + lock
 	self._fovCircle.Position = mouse
 	self._fovCircle.Radius = self.Track.FOV
 	self._fovCircle.Visible = true
@@ -812,7 +1104,7 @@ function PlayerMods:_stepTrack(dt)
 	end
 
 	local mouse = UserInputService:GetMouseLocation()
-	self:_drawFovCircle(mouse)
+	self:_drawFovCircle(mouse, dt)
 
 	local active = t.Mode == "Always"
 		or (t.Mode == "Hold Right Mouse" and UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2))
@@ -842,6 +1134,11 @@ function PlayerMods:Reset()
 	self:SetFly(false)
 	self:SetNoclip(false)
 	self:SetFullbright(false)
+	self:SetNoFog(false)
+	self:SetFreezeTime(false)
+	self:SetSlowFall(false)
+	self:SetPersist(false)
+	self:SetAntiAFK(false)
 	self.InfiniteJump = false
 	self.ClickTeleport = false
 	self:SetSprint(false)
@@ -858,8 +1155,8 @@ function PlayerMods:Reset()
 		if d then hum.HipHeight = d.HipHeight end
 	end
 	if had.Gravity then Workspace.Gravity = self.Defaults.Gravity end
-	if had.FOV then camera().FieldOfView = self.Defaults.FOV end
-	if had.ClockTime then Lighting.ClockTime = self.Defaults.ClockTime end
+	if had.FOV then self:_ease(camera(), "FieldOfView", self.Defaults.FOV, 0.3) end
+	if had.ClockTime then self:_ease(Lighting, "ClockTime", self.Defaults.ClockTime, 0.3) end
 	if had.MaxZoom then self.Player.CameraMaxZoomDistance = self.Defaults.MaxZoom end
 end
 
