@@ -17,7 +17,7 @@ local ui = GuiUI.new({
 	Title = "Player Menu",
 	Subtitle = "v1.3",
 	ToggleKey = Enum.KeyCode.RightShift, -- can be rebound with the button in the bottom bar
-	Style = "Modern", -- Modern | WindowsXP | WindowsVista | Windows11 | Windows95 | KDEPlasma | GNOME | macOS
+	Style = "GNOME", -- dark GNOME is the only style
 	DockSide = "Left", -- Left | Right | Top : which screen edge the bar is glued to
 	BarSize = 56, -- bar thickness in px (36 - 100)
 	UserScale = 0.6, -- starts at 60% (the slider in Settings > Look goes 30% - 160%)
@@ -29,7 +29,7 @@ local ui = GuiUI.new({
 	TitleRotation = "Auto", -- Auto | Up | Down (Left / Right docks only)
 	-- SlideMode = "LeftToRight", -- uncomment to always slide pages in from the left
 	-- Theme = "Midnight", -- Default | Dark | Midnight | Forest | Crimson | Light
-	-- CornerRadius = 16, -- every style starts at the max (16); lower it here or in Settings > Look
+	-- CornerRadius = 16, -- starts at the max (16); lower it here or in Settings > Look
 })
 
 local mods = PlayerMods.new()
@@ -98,7 +98,7 @@ end
 local function flip(key) setEntry(key, not registry[key].value) end
 
 -- MOVEMENT --------------------------------------------------------------------
-local movement = ui:AddTab("Movement", "Movement")
+local movement = ui:AddTab("Movement", "Movement", "🏃")
 local walkCell, jumpCell, sprintCell, bodyCell = movement:AddQuad("Speed", "Speed", { "Walk", "Jump", "Sprint", "Body" })
 
 slider(walkCell, "Walk Speed", "walkSpeed", 16, 150, 16, function(v) mods:SetWalkSpeed(v) end)
@@ -120,7 +120,7 @@ toggle(bodyCell, "Keep Values", "keepValues", false, function(on) mods:SetPersis
 bodyCell:AddButton("Respawn", function() mods:Respawn() end)
 
 -- FLIGHT ----------------------------------------------------------------------
-local flight = ui:AddTab("Flight", "Flight")
+local flight = ui:AddTab("Flight", "Flight", "🚀")
 local flyCell, feelCell, noclipCell, airCell = flight:AddQuad("Fly", "Fly", { "Fly", "Feel", "Noclip", "Air" })
 
 toggle(flyCell, "Fly", "fly", false, function(on)
@@ -144,7 +144,7 @@ toggle(airCell, "Slow Fall", "slowFall", false, function(on) mods:SetSlowFall(on
 slider(airCell, "Max Fall Speed", "fallSpeed", 5, 100, 30, function(v) mods:SetFallSpeed(v) end, true)
 
 -- TELEPORT --------------------------------------------------------------------
-local teleport = ui:AddTab("Teleport", "Teleport")
+local teleport = ui:AddTab("Teleport", "Teleport", "📍")
 
 -- four save slots: Save Here remembers where you stand, Go takes you back
 local spotCells = { teleport:AddQuad("Spots", "Spots", { "Spot 1", "Spot 2", "Spot 3", "Spot 4" }) }
@@ -195,7 +195,7 @@ end)
 backCell:AddButton("Respawn", function() mods:Respawn() end)
 
 -- CAMERA ----------------------------------------------------------------------
-local camera = ui:AddTab("Camera", "Camera")
+local camera = ui:AddTab("Camera", "Camera", "🎥")
 local fovCell, zoomCell, freeCell, lookCell = camera:AddQuad("View", "View", { "FOV", "Zoom", "Free Cam", "Free Look" })
 
 slider(fovCell, "Field of View", "fov", 40, 120, defaultFov, function(v) mods:SetFOV(v) end)
@@ -252,7 +252,7 @@ mods.OnCameraChanged = function(mode)
 end
 
 -- WORLD -----------------------------------------------------------------------
-local world = ui:AddTab("World", "World")
+local world = ui:AddTab("World", "World", "🌍")
 local gravityCell, timeCell, lightCell = world:AddQuad("World", "World", { "Gravity", "Time", "Light" })
 
 slider(gravityCell, "Gravity", "gravity", 0, 400, defaultGravity, function(v) mods:SetGravity(v) end)
@@ -269,7 +269,7 @@ end)
 toggle(lightCell, "No Fog", "noFog", false, function(on) mods:SetNoFog(on) end)
 
 -- VISUALS ---------------------------------------------------------------------
-local visualsTab = ui:AddTab("Visuals", "Visuals")
+local visualsTab = ui:AddTab("Visuals", "Visuals", "👀")
 local showCell, tagCell, tracerCell, rangeCell = visualsTab:AddQuad("ESP", "ESP", { "Show", "Tags", "Tracers", "Range" })
 
 toggle(showCell, "ESP", "espEnabled", false, function(on) visuals:SetEnabled(on) end, true)
@@ -297,7 +297,7 @@ color(fillCell, "Fill Color", "espFillColor", Color3.fromRGB(255, 60, 60), funct
 color(outlineCell, "Outline Color", "espOutlineColor", Color3.fromRGB(255, 255, 255), function(c) visuals:Set("OutlineColor", c) end, true)
 
 -- TRACKING --------------------------------------------------------------------
-local tracking = ui:AddTab("Tracking", "Tracking")
+local tracking = ui:AddTab("Tracking", "Tracking", "🎯")
 local trackCell, pickCell, feelTrackCell, checkCell = tracking:AddQuad("Aim", "Aim", { "Track", "Target", "Feel", "Checks" })
 
 toggle(trackCell, "Tracking", "trackEnabled", false, function(on) mods:SetTracking(on) end, true)
@@ -318,7 +318,7 @@ toggle(checkCell, "Team Check", "trackTeamCheck", true, function(on) mods:SetTra
 toggle(checkCell, "Wall Check", "trackWallCheck", false, function(on) mods:SetTrackOption("WallCheck", on) end, true)
 
 -- INFO ------------------------------------------------------------------------
-local info = ui:AddTab("Info", "Info")
+local info = ui:AddTab("Info", "Info", "📊")
 local perfCell, charCell, sessionCell = info:AddQuad("Stats", "Stats", { "Performance", "Character", "Session" })
 local fpsLabel = perfCell:AddLabel("FPS: --")
 local pingLabel = perfCell:AddLabel("Ping: --")
@@ -394,70 +394,48 @@ local function applyConfig(data)
 	return count
 end
 
-local settings = ui:AddTab("Settings", "Settings")
+local settings = ui:AddTab("Settings", "Settings", "🔧")
 
--- CONFIGS ---------------------------------------------------------------------
-local nameCell, fileCell, manageCell, resetCell = settings:AddQuad("Configs", "Configs", { "Name", "File", "Manage", "Reset" })
-local cfgName = "default"
-nameCell:AddTextBox("Name", "default", function(text)
-	if text ~= "" then cfgName = text end
-end)
-nameCell:AddToggle("Auto-load on start", false, function(on)
-	Config.SetAutoload(on and cfgName or nil)
-	ui:Notify(on and ("Auto-load: " .. cfgName) or "Auto-load off")
-end)
+-- MENU: look + dock, just the essentials ------------------------------------------------
+local lookCell, dockCell = settings:AddQuad("Menu", "Menu", { "Look", "Dock" })
 
-fileCell:AddButton("Save Config", function()
-	local ok, err = Config.Save(cfgName, collect())
-	ui:Notify(ok and ("Saved '" .. cfgName .. "'") or ("Save failed: " .. tostring(err)))
-end)
-fileCell:AddButton("Load Config", function()
-	local data, err = Config.Load(cfgName)
-	if data then
-		ui:Notify("Loaded '" .. cfgName .. "' (" .. applyConfig(data) .. " settings)")
-	else
-		ui:Notify("Load failed: " .. tostring(err))
-	end
-end)
+local ACCENTS = {
+	Blue = Color3.fromRGB(53, 132, 228), Green = Color3.fromRGB(46, 194, 126),
+	Purple = Color3.fromRGB(176, 111, 222), Orange = Color3.fromRGB(255, 163, 72),
+	Red = Color3.fromRGB(237, 51, 59), Pink = Color3.fromRGB(246, 116, 176),
+}
+local ACCENT_NAMES = { "Default", "Blue", "Green", "Purple", "Orange", "Red", "Pink" }
+local scheme, accentDrop = "Default", nil
 
-manageCell:AddButton("Delete Config", function()
-	ui:Notify(Config.Delete(cfgName) and ("Deleted '" .. cfgName .. "'") or "Nothing to delete")
+lookCell:AddDropdown("Color Scheme", ui:GetThemeNames(), "Default", function(name)
+	scheme = name
+	ui:SetTheme(name)
+	accentDrop.Set("Default") -- a scheme brings its own accent
 end)
-manageCell:AddButton("List Configs", function()
-	local names = Config.List()
-	ui:Notify(#names > 0 and ("Configs: " .. table.concat(names, ", ")) or "No saved configs")
+accentDrop = lookCell:AddDropdown("Accent", ACCENT_NAMES, "Default", function(name)
+	if name == "Default" then ui:SetTheme(scheme) else ui:SetAccent(ACCENTS[name]) end
 end)
-manageCell:AddLabel("PlayerMenu/configs")
+lookCell:AddSlider("UI Scale %", 30, 160, 60, function(v) ui:SetUserScale(v / 100) end)
+lookCell:AddSlider("Transparency %", 0, 70, 0, function(v) ui:SetPanelTransparency(v / 100) end)
 
-resetCell:AddButton("Reset All Modifiers", function()
-	mods:Reset() -- turns every mod off and puts the character / world back
-	for key, entry in registry do
-		entry.value = entry.default
-		pcall(entry.control.Set, entry.default)
-		if entry.resetApply then pcall(entry.apply, entry.default) end -- tuning values live in the module
-	end
-	freeCam.Set(false)
-	specLabel.Text = mods:GetCameraStatus()
-	ui:Notify("Everything reset")
-end)
-resetCell:AddLabel("Back to the defaults")
+dockCell:AddDropdown("Dock Side", ui:GetDockSides(), "Left", function(side) ui:SetDockSide(side) end)
+dockCell:AddToggle("Auto-hide", true, function(on) ui:SetAutoHide(on) end)
+dockCell:AddSlider("Hide After (s)", 3, 60, 8, function(v) ui:SetIdleTime(v) end)
+dockCell:AddButton("Reset Position", function() ui:ResetPosition() end)
 
 -- KEYS: click a button, then press a key (Esc cancels, Backspace clears) ----------------
-local keyMoveCell, keyCamCell, keyVisCell, keyMenuCell = settings:AddQuad("Keys", "Keys", { "Movement", "Camera", "Visuals", "Menu" })
-local flyKey = keyMoveCell:AddKeybind("Fly", Enum.KeyCode.F)
-local noclipKey = keyMoveCell:AddKeybind("Noclip", Enum.KeyCode.N)
+local keyMainCell, keyMoreCell = settings:AddQuad("Keys", "Keys", { "Actions", "Camera & Menu" })
+local flyKey = keyMainCell:AddKeybind("Fly", Enum.KeyCode.F)
+local noclipKey = keyMainCell:AddKeybind("Noclip", Enum.KeyCode.N)
+local espKey = keyMainCell:AddKeybind("ESP", Enum.KeyCode.Z)
+local trackKey = keyMainCell:AddKeybind("Tracking", Enum.KeyCode.T)
+local freeCamKey = keyMainCell:AddKeybind("Free Cam", Enum.KeyCode.G)
 
-local freeCamKey = keyCamCell:AddKeybind("Free Cam", Enum.KeyCode.G)
-local specPrevKey = keyCamCell:AddKeybind("Prev Player", Enum.KeyCode.LeftBracket)
-local specNextKey = keyCamCell:AddKeybind("Next Player", Enum.KeyCode.RightBracket)
-local camStopKey = keyCamCell:AddKeybind("Stop Camera", Enum.KeyCode.End)
-
-local espKey = keyVisCell:AddKeybind("ESP", Enum.KeyCode.Z)
-local trackKey = keyVisCell:AddKeybind("Tracking", Enum.KeyCode.T)
-
-keyMenuCell:AddKeybind("Minimize", nil, function(key) ui:SetMinimizeKey(key) end)
-keyMenuCell:AddLabel("Esc cancels")
-keyMenuCell:AddLabel("Backspace clears")
+local specPrevKey = keyMoreCell:AddKeybind("Prev Player", Enum.KeyCode.LeftBracket)
+local specNextKey = keyMoreCell:AddKeybind("Next Player", Enum.KeyCode.RightBracket)
+local camStopKey = keyMoreCell:AddKeybind("Stop Camera", Enum.KeyCode.End)
+keyMoreCell:AddKeybind("Minimize Menu", nil, function(key) ui:SetMinimizeKey(key) end)
+keyMoreCell:AddLabel("Esc cancels, Backspace clears")
 
 local hotkeyConn = UserInputService.InputBegan:Connect(function(input, processed)
 	if processed or ui:IsCapturing() or input.UserInputType ~= Enum.UserInputType.Keyboard then return end
@@ -490,51 +468,41 @@ local hotkeyConn = UserInputService.InputBegan:Connect(function(input, processed
 	end
 end)
 
--- LOOK: style, colors, size, motion ----------------------------------------------------
-local styleCell, accentCell, sizeCell, motionCell = settings:AddQuad("Look", "Look", { "Style", "Accent", "Size", "Motion" })
-local accent, themeDrop, fontDrop, transSlider, cornerSlider
-
-styleCell:AddDropdown("Style", ui:GetStyleNames(), ui:GetStyle(), function(name)
-	local d = ui:SetStyle(name)
-	if themeDrop then themeDrop.Set("Default") end
-	if accent then accent.Set(d.Accent) end
-	if fontDrop then fontDrop.Set(d.Font) end
-	if transSlider then transSlider.Set(math.round(d.Transparency * 100)) end
-	if cornerSlider then cornerSlider.Set(d.Corner) end
-	ui:Notify("Style: " .. name)
+-- CONFIG: save / load everything, or put it all back ---------------------------------------
+local fileCell, resetCell = settings:AddQuad("Config", "Config", { "Save & Load", "Reset" })
+local cfgName = "default"
+fileCell:AddTextBox("Name", "default", function(text)
+	if text ~= "" then cfgName = text end
 end)
-themeDrop = styleCell:AddDropdown("Color Scheme", ui:GetThemeNames(), "Default", function(name)
-	accent.Set(ui:SetTheme(name)) -- the preset has its own accent, so sync the sliders
+fileCell:AddButton("Save", function()
+	local ok, err = Config.Save(cfgName, collect())
+	ui:Notify(ok and ("Saved '" .. cfgName .. "'") or ("Save failed: " .. tostring(err)))
 end)
-fontDrop = styleCell:AddDropdown("Font", ui:GetFontNames(), "SourceSansBold", function(name) ui:SetFont(name) end)
-
-accent = accentCell:AddColorPicker("Accent", ui:GetAccent(), function(c) ui:SetAccent(c) end)
-
-sizeCell:AddSlider("UI Scale %", 30, 160, 60, function(v) ui:SetUserScale(v / 100) end)
-transSlider = sizeCell:AddSlider("Transparency %", 0, 70, 20, function(v) ui:SetPanelTransparency(v / 100) end)
-cornerSlider = sizeCell:AddSlider("Corner Radius", 0, 16, 16, function(v) ui:SetCornerRadius(v) end)
-
-motionCell:AddSlider("Anim Speed %", 50, 200, 100, function(v) ui:SetAnimSpeed(v / 100) end)
-motionCell:AddDropdown("Page Slide", { "Auto", "LeftToRight", "RightToLeft" }, "Auto", function(mode)
-	ui:SetSlideMode(mode)
+fileCell:AddButton("Load", function()
+	local data, err = Config.Load(cfgName)
+	if data then
+		ui:Notify("Loaded '" .. cfgName .. "' (" .. applyConfig(data) .. " settings)")
+	else
+		ui:Notify("Load failed: " .. tostring(err))
+	end
 end)
-motionCell:AddToggle("Card Entrance", true, function(on) ui:SetEntrance(on) end)
+fileCell:AddToggle("Auto-load on start", false, function(on)
+	Config.SetAutoload(on and cfgName or nil)
+	ui:Notify(on and ("Auto-load: " .. cfgName) or "Auto-load off")
+end)
 
--- DOCK: where the bar sits, how thick it is, what it says -------------------------------
-local posCell, barCell, widgetCell, textCell = settings:AddQuad("Dock", "Dock", { "Position", "Bar", "Widget", "Text" })
-posCell:AddDropdown("Dock Side", ui:GetDockSides(), "Left", function(side) ui:SetDockSide(side) end)
-posCell:AddToggle("Draggable", true, function(on) ui:SetDraggable(on) end)
-posCell:AddButton("Reset Position", function() ui:ResetPosition() end)
-
-barCell:AddSlider("Thickness", 36, 100, 56, function(v) ui:SetBarSize(v) end)
-barCell:AddDropdown("Title Direction", ui:GetTitleRotations(), "Auto", function(mode) ui:SetTitleRotation(mode) end)
-
-widgetCell:AddToggle("Auto-hide", true, function(on) ui:SetAutoHide(on) end)
-widgetCell:AddSlider("Hide After (s)", 3, 60, 8, function(v) ui:SetIdleTime(v) end)
-widgetCell:AddSlider("Widget Length", 50, 200, 84, function(v) ui:SetWidgetLength(v) end)
-
-textCell:AddTextBox("Title", "Player Menu", function(text) if text ~= "" then ui:SetTitle(text) end end)
-textCell:AddTextBox("Subtitle", "v1.3", function(text) ui:SetSubtitle(text) end)
+resetCell:AddButton("Reset Everything", function()
+	mods:Reset() -- turns every mod off and puts the character / world back
+	for key, entry in registry do
+		entry.value = entry.default
+		pcall(entry.control.Set, entry.default)
+		if entry.resetApply then pcall(entry.apply, entry.default) end -- tuning values live in the module
+	end
+	freeCam.Set(false)
+	specLabel.Text = mods:GetCameraStatus()
+	ui:Notify("Everything reset")
+end)
+resetCell:AddLabel("Back to the defaults")
 
 -- apply the auto-load config (if one was set) once everything is built
 do

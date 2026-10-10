@@ -3,13 +3,15 @@
 -- the other modules onto the class:  Dock (layout)  Controls (page widgets)  Behavior (open/close/API).
 -- It knows nothing about the player; controls just fire callbacks.
 --
---   ui:AddTab(id, name) / ui:AddBottomTab(id, name) / tab:AddSubTab(id, name)
+--   ui:AddTab(id, name, icon) / ui:AddBottomTab(id, name) / tab:AddSubTab(id, name)
+--     icon = an emoji / symbol or an image ("rbxassetid://123"); hovering a tab shows its name in the header
 --   page:AddSection / AddLabel / AddButton / AddToggle / AddSlider
 --   page:AddDropdown / AddColorPicker / AddTextBox / AddKeybind
 --   tab:AddQuad(id, name, {"Title1", ...})  -> 1-4 titled cards in a grid; returns one page per card
+--                                              (cards with no controls are hidden, the others fill the space)
 --
 -- config: Name, Title, Subtitle, Transparency (0-1), ToggleKey, MinimizeKey (Enum.KeyCode),
---         Style: "Modern" | "WindowsXP" | "WindowsVista" | "Windows11" | "Windows95" | "KDEPlasma" | "GNOME" | "macOS"
+--         Style: "GNOME" (dark; the only style)
 --         AutoHide (true), IdleTime (seconds, default 8), WidgetLength (px), StartCollapsed (false)
 --         DockSide: "Left" | "Right" | "Top",  BarSize (36-100 px),  UserScale (0.3-1.6, 1 = auto fit)
 --         TitleRotation: "Auto" | "Up" | "Down" (Left/Right docks only)
@@ -215,7 +217,7 @@ function GuiUI.new(config)
 	self.MinimizeKey = config.MinimizeKey
 	self.DockSide = table.find(T.DockSides, config.DockSide) and config.DockSide or "Left"
 	self.TitleRot = table.find(T.TitleRotations, config.TitleRotation) and config.TitleRotation or "Auto"
-	self.Style = T.Skins[config.Style] and config.Style or "Modern"
+	self.Style = T.Skins[config.Style] and config.Style or "GNOME"
 	self._binding, self._capturing, self._swallow = false, false, false
 	self._token = 0
 	self._slideToken = 0
@@ -346,7 +348,7 @@ function GuiUI:_dir(oldOrder, newOrder)
 	return newOrder >= oldOrder and 1 or -1
 end
 
-local function newTab(self, id, name, isBottom)
+local function newTab(self, id, name, isBottom, icon)
 	local S = Theme.Size
 	local order
 	if isBottom then
@@ -362,10 +364,25 @@ local function newTab(self, id, name, isBottom)
 		btn = Button(self.FooterButtons, id, UDim2.new(), UDim2.fromOffset(S.SmallW, S.SmallH), name,
 			fieldOpts({ Depth = 3, TextSize = Theme.FontSize.Small, Kind = "bottom" }), function() self:SelectTab(id) end)
 	else
-		local size = State.Skin.Horizontal and UDim2.new(0, 120, 1, 0) or UDim2.new(1, 0, 0, S.Tab)
-		btn = Button(self.TabList, id, UDim2.new(), size, name,
-			{ Color = "SideTab", HoverColor = "SideTabH", PressColor = "SideTabP", Kind = "tab" },
+		local size = State.Skin.Horizontal and UDim2.new(0, S.TabIcon, 1, 0) or UDim2.new(1, 0, 0, S.Tab)
+		local isImage = type(icon) == "string" and icon:sub(1, 13) == "rbxassetid://"
+		local glyph = isImage and "" or (icon or name:sub(1, 1))
+		btn = Button(self.TabList, id, UDim2.new(), size, glyph,
+			{ Color = "SideTab", HoverColor = "SideTabH", PressColor = "SideTabP", Kind = "tab", TextSize = 24 },
 			function() self:SelectTab(id) end)
+		if isImage then
+			local img = New("ImageLabel", {
+				BackgroundTransparency = 1, AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+				Size = UDim2.fromOffset(22, 22), Image = icon, Parent = btn.Face,
+			})
+			Bind(img, "ImageColor3", "Text")
+		end
+		-- no text on the button, so hovering it shows the tab's name in the header instead
+		btn.Face.MouseEnter:Connect(function() self.TabLabel.Text = name end)
+		btn.Face.MouseLeave:Connect(function()
+			local cur = self.Tabs[self.CurrentTab]
+			self.TabLabel.Text = cur and cur.Name or ""
+		end)
 	end
 	btn.Holder.LayoutOrder = order
 
@@ -387,7 +404,7 @@ local function newTab(self, id, name, isBottom)
 	return tab
 end
 
-function GuiUI:AddTab(id, name) return newTab(self, id, name, false) end
+function GuiUI:AddTab(id, name, icon) return newTab(self, id, name, false, icon) end
 function GuiUI:AddBottomTab(id, name) return newTab(self, id, name, true) end
 
 function GuiUI:SelectTab(id)
@@ -412,7 +429,7 @@ function GuiUI:_revealTab(tab)
 	local list = self.TabList
 	local hz = State.Skin.Horizontal == true
 	local S = Theme.Size
-	local item = hz and 120 or S.Tab
+	local item = hz and S.TabIcon or S.Tab
 	local gap = 8
 	local start = (tab.Order - 1) * (item + gap) + (hz and 8 or 8)
 	local scale = math.max(self.UIScale.Scale, 0.01)
@@ -460,6 +477,23 @@ local function quadRect(n, i)
 	return UDim2.new(col * 0.5, col * g, row * 0.5, row * g), UDim2.new(0.5, -g, 0.5, -g)
 end
 
+-- Only cards that hold at least one control are shown. The visible ones are re-packed with the same
+-- rules as above (n = how many are visible), so an empty card leaves no hole and a row with nothing
+-- in it gives its height to the cards that are left. Runs once after the page is built and again
+-- whenever a control is added later (Page:_order queues it).
+local function layoutQuad(sub)
+	sub._layoutQueued = false
+	local shown = {}
+	for i, cell in sub.Cells do
+		local used = cell.Count > 0
+		sub.Slots[i].Visible = used
+		if used then table.insert(shown, sub.Slots[i]) end
+	end
+	for k, slot in shown do
+		slot.Position, slot.Size = quadRect(#shown, k)
+	end
+end
+
 -- A page made of 1 - 4 titled cards. Each card is a normal page (AddToggle, AddSlider, ...) that scrolls
 -- on its own if it fills up. Returns the cards in order:
 --   local a, b, c, d = tab:AddQuad("Speed", "Speed", { "Walk", "Jump", "Sprint", "Body" })
@@ -472,7 +506,13 @@ function Tab:AddQuad(id, name, titles)
 	local container = New("Frame", { Name = "Container", BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), Parent = frame })
 	New("UIPadding", { PaddingTop = UDim.new(0, 10), PaddingBottom = UDim.new(0, 10), PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10), Parent = container })
 
-	local cells, holders = {}, {}
+	local cells, holders, slots = {}, {}, {}
+	local sub = {
+		UI = self.UI, Id = id, Name = name, Order = self.SubCount, Button = btn, Container = container,
+		Quad = true, Cells = cells, Holders = holders, Slots = slots, _enter = 0, _layoutQueued = false,
+	}
+	sub.Layout = function() layoutQuad(sub) end
+
 	for i = 1, n do
 		local pos, size = quadRect(n, i)
 		local slot = New("Frame", { Name = "Slot" .. i, BackgroundTransparency = 1, Position = pos, Size = size, Parent = container })
@@ -488,12 +528,15 @@ function Tab:AddQuad(id, name, titles)
 		})
 		New("UIPadding", { PaddingTop = UDim.new(0, 2), PaddingBottom = UDim.new(0, 6), PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 10), Parent = scroll })
 		New("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder, Parent = scroll })
-		cells[i] = setmetatable({ UI = self.UI, Id = id .. "_" .. i, Name = titles[i], Container = scroll, Count = 0 }, Page)
+		cells[i] = setmetatable({ UI = self.UI, Id = id .. "_" .. i, Name = titles[i], Container = scroll, Count = 0, Owner = sub }, Page)
 		holders[i] = holder
+		slots[i] = slot
 	end
 
-	local sub = { UI = self.UI, Id = id, Name = name, Order = self.SubCount, Button = btn, Container = container,
-		Quad = true, Cells = cells, Holders = holders, _enter = 0 }
+	-- lay the cards out once the caller has filled them in (also covers a page where every card stays empty)
+	sub._layoutQueued = true
+	task.defer(sub.Layout)
+
 	self.Subs[id] = sub
 	for _, s in self.Subs do s.Button.Holder.Visible = self.SubCount > 1 end
 	if not self.CurrentSub then self:SelectSub(id) end

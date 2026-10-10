@@ -41,7 +41,7 @@ local Theme = {
 	Corner = 0,
 	AnimSpeed = 1,
 	Size = {
-		Tab = 38, Control = 38, SliderH = 50, LabelH = 28,
+		Tab = 38, TabIcon = 56, Control = 38, SliderH = 50, LabelH = 28,
 		SmallW = 104, SmallH = 26, BindW = 236, Item = 38, Gap = 8,
 	},
 	FontSize = { Title = 22, Header = 18, Button = 18, Small = 16, Label = 18 },
