@@ -3,7 +3,7 @@
 -- so the loader can replace a running menu when you execute it again.
 --
 -- LAYOUT: one side tab per topic, every page is a small grid of cards ("quad") instead of a long list.
---   Movement  Flight  Teleport  Camera  World  Visuals  Tracking  Guard  Info  Settings
+--   Movement  Flight  Teleport  Camera  World  Vehicle  Games  Visuals  Tracking  Guard  Info  Settings
 local import = ...
 
 local UserInputService = game:GetService("UserInputService")
@@ -13,6 +13,9 @@ local PlayerMods = import("PlayerMods")
 local Visuals = import("Visuals")
 local Config = import("Config")
 local Guard = import("Guard")
+local Vehicle = import("Vehicle")
+local Games = import("Games")
+local MM2 = import("MM2")
 
 local ui = GuiUI.new({
 	Title = "Player Menu",
@@ -386,6 +389,166 @@ guard.OnChange = refreshFlags
 -- shown once per player + cheat type
 guard.OnFlag = function(p, kind) ui:Notify("Player " .. p.Name .. " Detected " .. kind, 4) end
 
+-- VEHICLE ---------------------------------------------------------------------
+-- Sit in any vehicle: it is classified (Car / Bike / Boat / Aircraft) and the mode you pick is read per type.
+local vehicle = Vehicle.new()
+vehicle.OnMove = function() guard:Allow(2) end -- Flip Upright / anti-flip must not trip Block Forced TP
+do -- your own boost and speed assist must not trip the guard's fling / speed checks
+	local baseExempt = guard.IsExempt
+	guard.IsExempt = function() return baseExempt() or vehicle:IsActive() end
+end
+
+local VEH_KEYS = {
+	Speed = "vehSpeed", Torque = "vehTorque", Turn = "vehTurn", Grip = "vehGrip", TopSpeed = "vehTop",
+	Accel = "vehAccel", BoostCap = "vehBoostCap", LowGrav = "vehLowGrav", AntiFlip = "vehAntiFlip",
+}
+-- moves the sliders to the numbers a mode / vehicle type just produced (they are already applied)
+local function syncVehicle(vals)
+	for field, key in VEH_KEYS do
+		local entry = registry[key]
+		if entry and vals[field] ~= nil then
+			entry.value = vals[field]
+			pcall(entry.control.Set, vals[field])
+		end
+	end
+end
+
+local vehicleTab = ui:AddTab("Vehicle", "Vehicle", "🚗")
+local vStatusCell, vModeCell, vTuneCell, vAssistCell = vehicleTab:AddQuad("Drive", "Drive", { "Vehicle", "Mode", "Tuning", "Assist" })
+
+local vehStatus = vStatusCell:AddLabel("Not in a vehicle")
+toggle(vStatusCell, "Vehicle Mods", "vehEnabled", false, function(on)
+	vehicle:SetEnabled(on)
+	ui:Notify("Vehicle mods " .. onOff(on))
+end, true)
+vStatusCell:AddDropdown("Type", Vehicle.TypeNames, "Auto", function(kind) syncVehicle(vehicle:SetTypeOverride(kind)) end)
+vStatusCell:AddLabel("Auto = detected from the model")
+
+vModeCell:AddDropdown("Mode", Vehicle.ModeNames, "Stock", function(name) syncVehicle(vehicle:SetMode(name)) end)
+vModeCell:AddLabel("Stock Sport Drift Rugged Rocket")
+vModeCell:AddLabel("Each one reads per vehicle type")
+vModeCell:AddLabel("Custom = never auto-changes")
+
+slider(vTuneCell, "Top Speed %", "vehSpeed", 25, 500, 100, function(v) vehicle:Set("Speed", v) end, true)
+slider(vTuneCell, "Torque %", "vehTorque", 25, 500, 100, function(v) vehicle:Set("Torque", v) end, true)
+slider(vTuneCell, "Turn %", "vehTurn", 25, 300, 100, function(v) vehicle:Set("Turn", v) end, true)
+slider(vTuneCell, "Grip %", "vehGrip", 10, 300, 100, function(v) vehicle:Set("Grip", v) end, true)
+
+slider(vAssistCell, "Assist Top Speed", "vehTop", 0, 500, 0, function(v) vehicle:Set("TopSpeed", v) end, true)
+slider(vAssistCell, "Assist Accel", "vehAccel", 10, 400, 60, function(v) vehicle:Set("Accel", v) end, true)
+slider(vAssistCell, "Low Gravity %", "vehLowGrav", 0, 100, 0, function(v) vehicle:Set("LowGrav", v) end, true)
+toggle(vAssistCell, "Reverse Axis", "vehReverse", false, function(on) vehicle:Set("ReverseAxis", on) end, true)
+vAssistCell:AddLabel("0 = assist off. Flip axis if it pushes backwards")
+
+local vBoostCell, vSafeCell, vAttrCell = vehicleTab:AddQuad("Extras", "Extras", { "Boost", "Safety", "Attributes" })
+
+toggle(vBoostCell, "Boost", "vehBoost", true, function(on) vehicle:Set("BoostOn", on) end, true)
+slider(vBoostCell, "Boost Accel", "vehBoostAccel", 20, 400, 120, function(v) vehicle:Set("BoostAccel", v) end, true)
+slider(vBoostCell, "Boost Cap", "vehBoostCap", 50, 800, 250, function(v) vehicle:Set("BoostCap", v) end, true)
+local boostKey = vBoostCell:AddKeybind("Boost Key", Enum.KeyCode.LeftShift, function(k) vehicle.BoostKey = k end)
+
+toggle(vSafeCell, "Anti-Flip", "vehAntiFlip", false, function(on) vehicle:Set("AntiFlip", on) end, true)
+toggle(vSafeCell, "Restore On Exit", "vehRestore", true, function(on) vehicle:Set("Restore", on) end, true)
+vSafeCell:AddButton("Flip Upright", function()
+	ui:Notify(vehicle:Upright() and "Flipped upright" or "Sit in a vehicle first")
+end)
+local uprightKey = vSafeCell:AddKeybind("Upright Key", Enum.KeyCode.U)
+vSafeCell:AddKeybind("Handbrake Key", Enum.KeyCode.X, function(k) vehicle.BrakeKey = k end)
+
+-- attribute editor: cycle through the numeric Attributes / Number values found on the vehicle
+local attrNames, attrIdx = {}, 0
+local attrLabel = vAttrCell:AddLabel("Press Scan / Next")
+local attrBox = vAttrCell:AddTextBox("Value", "", function() end)
+local function showAttr()
+	local name = attrNames[attrIdx]
+	if not name then
+		attrLabel.Text = "Nothing found"
+		attrBox.Set("")
+		return
+	end
+	local v = vehicle:GetValue(name)
+	attrLabel.Text = name
+	attrBox.Set(v ~= nil and tostring(v) or "")
+end
+vAttrCell:AddButton("Scan / Next", function()
+	if not vehicle:GetStatus() then ui:Notify("Turn Vehicle Mods on and sit in a vehicle") return end
+	attrNames = vehicle:GetValueNames()
+	attrIdx = #attrNames > 0 and (attrIdx % #attrNames + 1) or 0
+	showAttr()
+	if #attrNames > 0 then ui:Notify(#attrNames .. " values found") end
+end)
+local function setAttr(n)
+	local name = attrNames[attrIdx]
+	if not (name and n) then ui:Notify("Pick a value first") return end
+	if vehicle:SetValue(name, n) then
+		showAttr()
+		ui:Notify(name .. " = " .. tostring(vehicle:GetValue(name)))
+	else
+		ui:Notify("Could not change it")
+	end
+end
+vAttrCell:AddButton("Apply Value", function() setAttr(tonumber(attrBox.Get())) end)
+vAttrCell:AddButton("x2", function() local v = tonumber(attrBox.Get()); setAttr(v and v * 2) end)
+vAttrCell:AddButton("Half", function() local v = tonumber(attrBox.Get()); setAttr(v and v / 2) end)
+vAttrCell:AddButton("Restore Values", function() vehicle:RestoreValues(); showAttr() end)
+
+vehicle.OnChanged = function(info, vals)
+	vehStatus.Text = info and (info.Name .. "  [" .. info.Type .. "]") or "Not in a vehicle"
+	attrNames, attrIdx = {}, 0
+	attrLabel.Text = "Press Scan / Next"
+	syncVehicle(vals)
+	if info then ui:Notify("Vehicle: " .. info.Name .. " (" .. info.Type .. ")") end
+end
+
+-- GAMES -----------------------------------------------------------------------------
+-- Murder Mystery 2. (More games: add an entry to Games.List, a module like MM2.lua and a quad here.)
+local mm2 = MM2.new()
+mm2.Teleport = function(cf) return mods:TeleportTo(cf) end -- goes through the guard exemption + undo
+local detected = Games.Detect()
+
+local gamesTab = ui:AddTab("Games", "Games", "🎮")
+local gStatusCell, gRoleCell, gGunCell, gCoinCell = gamesTab:AddQuad("MM2", "MM2", { "Status", "Roles", "Gun", "Coins" })
+
+gStatusCell:AddLabel("Game: " .. (detected and detected.Name or "not recognised"))
+local murdererLabel = gStatusCell:AddLabel("Murderer: ?")
+local sheriffLabel = gStatusCell:AddLabel("Sheriff: ?")
+gStatusCell:AddButton("Clear Roles", function()
+	mm2:ClearRoles()
+	murdererLabel.Text, sheriffLabel.Text = "Murderer: ?", "Sheriff: ?"
+end)
+if not detected or detected.Id ~= "MM2" then gStatusCell:AddLabel("Only works inside MM2") end
+
+mm2.OnRole = function(p, role)
+	local label = role == "Murderer" and murdererLabel or sheriffLabel
+	label.Text = role .. ": " .. p.DisplayName
+	if mm2.Settings.Alerts then
+		ui:Notify((p == mm2.Player and "You are the " or (p.DisplayName .. " is the ")) .. role, 4)
+	end
+end
+mm2.OnGun = function()
+	if mm2.Settings.Alerts and mm2.Settings.GunESP then ui:Notify("The gun was dropped!", 4) end
+end
+
+toggle(gRoleCell, "Role ESP", "mm2Roles", false, function(on) mm2:Set("RoleESP", on) end, true)
+toggle(gRoleCell, "Show Innocents", "mm2Innocents", false, function(on) mm2:Set("Innocents", on) end, true)
+toggle(gRoleCell, "Name Tags", "mm2Tags", true, function(on) mm2:Set("Tags", on) end, true)
+toggle(gRoleCell, "Role Alerts", "mm2Alerts", true, function(on) mm2:Set("Alerts", on) end, true)
+gRoleCell:AddLabel("Learned from the Knife / Gun held")
+
+toggle(gGunCell, "Gun Drop ESP", "mm2GunEsp", false, function(on) mm2:Set("GunESP", on) end, true)
+toggle(gGunCell, "Return After Grab", "mm2Return", true, function(on) mm2:Set("ReturnAfterGun", on) end, true)
+gGunCell:AddButton("Grab Gun", function()
+	local ok, err = mm2:GrabGun()
+	ui:Notify(ok and "Fetching the gun..." or err)
+end)
+
+toggle(gCoinCell, "Auto Coins", "mm2Coins", false, function(on)
+	mm2:Set("AutoCoins", on)
+	ui:Notify("Auto coins " .. onOff(on))
+end, true)
+slider(gCoinCell, "Delay (ms)", "mm2CoinDelay", 200, 1500, 700, function(v) mm2:Set("CoinDelay", v) end, true)
+gCoinCell:AddLabel("Teleports to each coin in turn")
+
 -- INFO ------------------------------------------------------------------------
 local info = ui:AddTab("Info", "Info", "📊")
 local perfCell, charCell, sessionCell = info:AddQuad("Stats", "Stats", { "Performance", "Character", "Session" })
@@ -552,6 +715,8 @@ local hotkeyConn = UserInputService.InputBegan:Connect(function(input, processed
 		local on = not registry.espEnabled.value
 		setEntry("espEnabled", on)
 		ui:Notify("ESP " .. onOff(on))
+	elseif key == uprightKey.Get() then
+		if vehicle:Upright() then ui:Notify("Flipped upright") end
 	elseif key == trackKey.Get() then
 		local on = not registry.trackEnabled.value
 		setEntry("trackEnabled", on)
@@ -627,6 +792,8 @@ return {
 		hotkeyConn:Disconnect()
 		pcall(function() visuals:Destroy() end)
 		pcall(function() guard:Destroy() end)
+		pcall(function() vehicle:Destroy() end)
+		pcall(function() mm2:Destroy() end)
 		mods:Destroy()
 		ui:Destroy()
 	end,
