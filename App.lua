@@ -3,7 +3,7 @@
 -- so the loader can replace a running menu when you execute it again.
 --
 -- LAYOUT: one side tab per topic, every page is a small grid of cards ("quad") instead of a long list.
---   Movement  Flight  Teleport  Camera  World  Vehicle  Games  Visuals  Tracking  Guard  Info  Settings
+--   Player  World  Visuals  Tracking  Guard  Vehicle  Games  Info  Settings
 local import = ...
 
 local UserInputService = game:GetService("UserInputService")
@@ -16,6 +16,7 @@ local Guard = import("Guard")
 local Vehicle = import("Vehicle")
 local Games = import("Games")
 local MM2 = import("MM2")
+local Audio = import("Audio")
 
 local ui = GuiUI.new({
 	Title = "Player Menu",
@@ -64,6 +65,9 @@ local function onOff(on) return on and "ON" or "OFF" end
 -- and restored from a config. resetApply = also re-apply the default on "Reset All"
 -- (for tuning values that live in the module, not on the character / world).
 local registry = {}
+local dirtyAt = nil -- os.clock() of the last change (autosave waits for it to go quiet)
+
+local function touch() dirtyAt = os.clock() end
 
 local function register(key, default, apply, resetApply)
 	local entry = { value = default, default = default, apply = apply, resetApply = resetApply }
@@ -73,35 +77,53 @@ end
 
 local function slider(page, label, key, min, max, default, apply, resetApply)
 	local entry = register(key, default, apply, resetApply)
-	entry.control = page:AddSlider(label, min, max, default, function(v) entry.value = v; apply(v) end)
+	entry.control = page:AddSlider(label, min, max, default, function(v) entry.value = v; touch(); apply(v) end)
 	return entry.control
 end
 
 local function toggle(page, label, key, default, apply, resetApply)
 	local entry = register(key, default, apply, resetApply)
-	entry.control = page:AddToggle(label, default, function(on) entry.value = on; apply(on) end)
+	entry.control = page:AddToggle(label, default, function(on) entry.value = on; touch(); apply(on) end)
 	return entry.control
 end
 
 local function dropdown(page, label, key, list, default, apply, resetApply)
 	local entry = register(key, default, apply, resetApply)
-	entry.control = page:AddDropdown(label, list, default, function(v) entry.value = v; apply(v) end)
+	entry.control = page:AddDropdown(label, list, default, function(v) entry.value = v; touch(); apply(v) end)
 	return entry.control
 end
 
 local function color(page, label, key, default, apply, resetApply)
 	local entry = register(key, default, apply, resetApply)
-	entry.control = page:AddColorPicker(label, default, function(c) entry.value = c; apply(c) end)
+	entry.control = page:AddColorPicker(label, default, function(c) entry.value = c; touch(); apply(c) end)
 	return entry.control
 end
 
+-- keybinds are saved by KeyCode name (false = unbound). apply receives a KeyCode or nil.
+local function keybind(page, label, key, default, apply)
+	local entry = register(key, default and default.Name or false, function(name)
+		if apply then apply(name and Enum.KeyCode[name] or nil) end
+	end, true)
+	local ctl = page:AddKeybind(label, default, function(k)
+		entry.value = k and k.Name or false
+		touch()
+		if apply then apply(k) end
+	end)
+	entry.control = {
+		Set = function(name) ctl.Set(name and Enum.KeyCode[name] or nil) end,
+		Get = ctl.Get,
+	}
+	return ctl
+end
+
 -- set a registered control from code (hotkeys, config load)
-local function setEntry(key, value)
+local function setEntry(key, value, quiet)
 	local entry = registry[key]
 	if not entry then return end
 	entry.value = value
 	pcall(entry.control.Set, value)
 	pcall(entry.apply, value)
+	if not quiet then touch() end
 end
 
 -- put a control back to its default WITHOUT calling its apply (the caller already reset the real value)
@@ -114,10 +136,14 @@ end
 
 local function flip(key) setEntry(key, not registry[key].value) end
 
--- MOVEMENT --------------------------------------------------------------------
-local movement = ui:AddTab("Movement", "Movement", "🏃")
-local walkCell, jumpCell, sprintCell, bodyCell = movement:AddQuad("Speed", "Speed", { "Walk", "Jump", "Sprint", "Body" })
+-- PLAYER: Movement + Flight + Camera in one tab -------------------------------
+local playerTab = ui:AddTab("Player", "Player", "🏃")
+local walkCell, jumpCell, sprintCell, bodyCell = playerTab:AddQuad("Speed", "Move", { "Walk", "Jump", "Sprint", "Body" })
+local flyCell, feelCell, noclipCell, airCell = playerTab:AddQuad("Fly", "Fly", { "Fly", "Feel", "Noclip", "Air" })
+local fovCell, zoomCell, freeCell, lookCell = playerTab:AddQuad("View", "View", { "FOV", "Zoom", "Free Cam", "Free Look" })
+local targetCell, cycleCell, modeCell = playerTab:AddQuad("Spectate", "Spectate", { "Target", "Cycle", "Mode" })
 
+-- move
 slider(walkCell, "Walk Speed", "walkSpeed", 16, 150, 16, function(v) mods:SetWalkSpeed(v) end)
 walkCell:AddButton("Reset", function() mods:ResetValue("WalkSpeed"); restore("walkSpeed") end)
 
@@ -136,10 +162,7 @@ slider(bodyCell, "Hip Height", "hipHeight", 0, 20, 2, function(v) mods:SetHipHei
 toggle(bodyCell, "Keep Values", "keepValues", false, function(on) mods:SetPersist(on) end)
 bodyCell:AddButton("Respawn", function() mods:Respawn() end)
 
--- FLIGHT ----------------------------------------------------------------------
-local flight = ui:AddTab("Flight", "Flight", "🚀")
-local flyCell, feelCell, noclipCell, airCell = flight:AddQuad("Fly", "Fly", { "Fly", "Feel", "Noclip", "Air" })
-
+-- fly
 toggle(flyCell, "Fly", "fly", false, function(on)
 	mods:SetFly(on)
 	ui:Notify("Fly " .. onOff(on))
@@ -160,61 +183,7 @@ noclipCell:AddLabel("Walk through walls")
 toggle(airCell, "Slow Fall", "slowFall", false, function(on) mods:SetSlowFall(on) end)
 slider(airCell, "Max Fall Speed", "fallSpeed", 5, 100, 30, function(v) mods:SetFallSpeed(v) end, true)
 
--- TELEPORT --------------------------------------------------------------------
-local teleport = ui:AddTab("Teleport", "Teleport", "📍")
-
--- four save slots: Save Here remembers where you stand, Go takes you back
-local spotCells = { teleport:AddQuad("Spots", "Spots", { "Spot 1", "Spot 2", "Spot 3", "Spot 4" }) }
-for i, cell in spotCells do
-	local status = cell:AddLabel("Empty")
-	cell:AddButton("Save Here", function()
-		if mods:SaveSlot(i) then
-			local p = mods:GetSlot(i)
-			status.Text = string.format("%d, %d, %d", math.round(p.X), math.round(p.Y), math.round(p.Z))
-			ui:Notify("Spot " .. i .. " saved")
-		else
-			ui:Notify("No character to save")
-		end
-	end)
-	cell:AddButton("Go", function()
-		ui:Notify(mods:GoSlot(i) and ("Spot " .. i) or "Spot " .. i .. " is empty")
-	end)
-end
-
-local playerCell, clickCell, glideCell, backCell = teleport:AddQuad("Travel", "Travel", { "Player", "Click", "Glide", "Back" })
-
-local tpName = ""
-playerCell:AddTextBox("Player", "Player name", function(text)
-	tpName = (text == "Player name") and "" or text
-end)
-playerCell:AddButton("Teleport", function()
-	local p = mods:FindPlayer(tpName)
-	if not p then ui:Notify("Player not found") return end
-	ui:Notify(mods:TeleportToPlayer(p) and ("To " .. p.DisplayName) or "They have no character")
-end)
-playerCell:AddButton("Next Player", function()
-	local p = mods:TeleportStep(1)
-	ui:Notify(p and ("To " .. p.DisplayName) or "No other players")
-end)
-
-toggle(clickCell, "Click Teleport", "clickTp", false, function(on)
-	mods:SetClickTeleport(on)
-	ui:Notify("Click Teleport " .. onOff(on) .. (on and " (Ctrl + Click)" or ""))
-end)
-clickCell:AddLabel("Ctrl + Click the ground")
-
-toggle(glideCell, "Smooth Glide", "glide", false, function(on) mods:SetGlide(on) end, true)
-slider(glideCell, "Glide Time (ms)", "glideTime", 100, 1500, 450, function(v) mods:SetGlideTime(v / 1000) end, true)
-
-backCell:AddButton("Undo Teleport", function()
-	ui:Notify(mods:UndoTeleport() and "Went back" or "Nothing to undo")
-end)
-backCell:AddButton("Respawn", function() mods:Respawn() end)
-
--- CAMERA ----------------------------------------------------------------------
-local camera = ui:AddTab("Camera", "Camera", "🎥")
-local fovCell, zoomCell, freeCell, lookCell = camera:AddQuad("View", "View", { "FOV", "Zoom", "Free Cam", "Free Look" })
-
+-- view
 slider(fovCell, "Field of View", "fov", 40, 120, defaultFov, function(v) mods:SetFOV(v) end)
 fovCell:AddButton("Reset", function() mods:ResetValue("FOV"); restore("fov") end)
 
@@ -233,8 +202,7 @@ slider(lookCell, "Look Sens %", "freeCamSens", 10, 100, 30, function(v) mods:Set
 slider(lookCell, "Smoothing %", "freeCamSmooth", 0, 100, 50, function(v) mods:SetFreeCamSmooth(v) end, true)
 lookCell:AddLabel("WASD  E up  Q down")
 
-local targetCell, cycleCell, modeCell = camera:AddQuad("Spectate", "Spectate", { "Target", "Cycle", "Mode" })
-
+-- spectate
 local specLabel = targetCell:AddLabel("Camera: Normal")
 targetCell:AddTextBox("Player", "Player name", function(text)
 	if text == "" or text == "Player name" then return end
@@ -268,9 +236,57 @@ mods.OnCameraChanged = function(mode)
 	freeCam.Set(mode == "Free")
 end
 
--- WORLD -----------------------------------------------------------------------
-local world = ui:AddTab("World", "World", "🌍")
-local gravityCell, timeCell, lightCell = world:AddQuad("World", "World", { "Gravity", "Time", "Light" })
+-- WORLD: Teleport + World + Audio in one tab -----------------------------------
+local worldTab = ui:AddTab("World", "World", "🌍")
+local spotCells = { worldTab:AddQuad("Spots", "Spots", { "Spot 1", "Spot 2", "Spot 3", "Spot 4" }) }
+local playerCell, clickCell, glideCell, backCell = worldTab:AddQuad("Travel", "Travel", { "Player", "Click", "Glide", "Back" })
+local gravityCell, timeCell, lightCell = worldTab:AddQuad("Env", "Env", { "Gravity", "Time", "Light" })
+local audioCell, audioNoteCell = worldTab:AddQuad("Audio", "Audio", { "Master", "Notes" })
+
+-- four save slots: Save Here remembers where you stand, Go takes you back
+for i, cell in spotCells do
+	local status = cell:AddLabel("Empty")
+	cell:AddButton("Save Here", function()
+		if mods:SaveSlot(i) then
+			local p = mods:GetSlot(i)
+			status.Text = string.format("%d, %d, %d", math.round(p.X), math.round(p.Y), math.round(p.Z))
+			ui:Notify("Spot " .. i .. " saved")
+		else
+			ui:Notify("No character to save")
+		end
+	end)
+	cell:AddButton("Go", function()
+		ui:Notify(mods:GoSlot(i) and ("Spot " .. i) or "Spot " .. i .. " is empty")
+	end)
+end
+
+local tpName = ""
+playerCell:AddTextBox("Player", "Player name", function(text)
+	tpName = (text == "Player name") and "" or text
+end)
+playerCell:AddButton("Teleport", function()
+	local p = mods:FindPlayer(tpName)
+	if not p then ui:Notify("Player not found") return end
+	ui:Notify(mods:TeleportToPlayer(p) and ("To " .. p.DisplayName) or "They have no character")
+end)
+playerCell:AddButton("Next Player", function()
+	local p = mods:TeleportStep(1)
+	ui:Notify(p and ("To " .. p.DisplayName) or "No other players")
+end)
+
+toggle(clickCell, "Click Teleport", "clickTp", false, function(on)
+	mods:SetClickTeleport(on)
+	ui:Notify("Click Teleport " .. onOff(on) .. (on and " (Ctrl + Click)" or ""))
+end)
+clickCell:AddLabel("Ctrl + Click the ground")
+
+toggle(glideCell, "Smooth Glide", "glide", false, function(on) mods:SetGlide(on) end, true)
+slider(glideCell, "Glide Time (ms)", "glideTime", 100, 1500, 450, function(v) mods:SetGlideTime(v / 1000) end, true)
+
+backCell:AddButton("Undo Teleport", function()
+	ui:Notify(mods:UndoTeleport() and "Went back" or "Nothing to undo")
+end)
+backCell:AddButton("Respawn", function() mods:Respawn() end)
 
 slider(gravityCell, "Gravity", "gravity", 0, 400, defaultGravity, function(v) mods:SetGravity(v) end)
 gravityCell:AddButton("Reset", function() mods:ResetValue("Gravity"); restore("gravity") end)
@@ -284,6 +300,24 @@ toggle(lightCell, "Fullbright", "fullbright", false, function(on)
 	ui:Notify("Fullbright " .. onOff(on))
 end)
 toggle(lightCell, "No Fog", "noFog", false, function(on) mods:SetNoFog(on) end)
+
+-- audio: game volume to a percent, voice chat is never touched
+local audio = Audio.new()
+toggle(audioCell, "Volume Control", "audioOn", false, function(on)
+	audio:SetEnabled(on)
+	ui:Notify("Volume control " .. onOff(on))
+end, true)
+slider(audioCell, "Game Volume %", "audioPct", 0, 200, 100, function(v) audio:Set("Percent", v) end, true)
+audioCell:AddButton("Mute Game (Voice Stays)", function()
+	setEntry("audioOn", true)
+	setEntry("audioPct", 0)
+end)
+audioCell:AddButton("Back To 100%", function() setEntry("audioPct", 100) end)
+
+audioNoteCell:AddLabel("Scales game sounds only")
+audioNoteCell:AddLabel("Voice chat is never touched")
+audioNoteCell:AddLabel("100% = normal, 200% = louder")
+audioNoteCell:AddLabel("Off = everything restored")
 
 -- VISUALS ---------------------------------------------------------------------
 local visualsTab = ui:AddTab("Visuals", "Visuals", "👀")
@@ -445,15 +479,15 @@ local vBoostCell, vSafeCell, vAttrCell = vehicleTab:AddQuad("Extras", "Extras", 
 toggle(vBoostCell, "Boost", "vehBoost", true, function(on) vehicle:Set("BoostOn", on) end, true)
 slider(vBoostCell, "Boost Accel", "vehBoostAccel", 20, 400, 120, function(v) vehicle:Set("BoostAccel", v) end, true)
 slider(vBoostCell, "Boost Cap", "vehBoostCap", 50, 800, 250, function(v) vehicle:Set("BoostCap", v) end, true)
-local boostKey = vBoostCell:AddKeybind("Boost Key", Enum.KeyCode.LeftShift, function(k) vehicle.BoostKey = k end)
+keybind(vBoostCell, "Boost Key", "keyBoost", Enum.KeyCode.LeftShift, function(k) vehicle.BoostKey = k end)
 
 toggle(vSafeCell, "Anti-Flip", "vehAntiFlip", false, function(on) vehicle:Set("AntiFlip", on) end, true)
 toggle(vSafeCell, "Restore On Exit", "vehRestore", true, function(on) vehicle:Set("Restore", on) end, true)
 vSafeCell:AddButton("Flip Upright", function()
 	ui:Notify(vehicle:Upright() and "Flipped upright" or "Sit in a vehicle first")
 end)
-local uprightKey = vSafeCell:AddKeybind("Upright Key", Enum.KeyCode.U)
-vSafeCell:AddKeybind("Handbrake Key", Enum.KeyCode.X, function(k) vehicle.BrakeKey = k end)
+local uprightKey = keybind(vSafeCell, "Upright Key", "keyUpright", Enum.KeyCode.U)
+keybind(vSafeCell, "Handbrake Key", "keyBrake", Enum.KeyCode.X, function(k) vehicle.BrakeKey = k end)
 
 -- attribute editor: cycle through the numeric Attributes / Number values found on the vehicle
 local attrNames, attrIdx = {}, 0
@@ -592,7 +626,9 @@ task.spawn(function()
 end)
 
 -- SETTINGS: everything about the menu itself ----------------------------------
--- save / load every registered setting to a file in your executor workspace
+local cfgName = "default"
+
+-- every registered setting -> plain table (Color3 becomes {r,g,b,color=true})
 local function collect()
 	local values = {}
 	for key, entry in registry do
@@ -607,30 +643,45 @@ local function collect()
 		end
 		values[key] = v
 	end
-	return { version = 1, values = values }
+	return { version = 2, values = values }
 end
 
+-- applied in alphabetical key order so dependent settings (menuScheme before menuTint) stay stable
 local function applyConfig(data)
 	if type(data) ~= "table" or type(data.values) ~= "table" then return 0 end
-	local count = 0
-	for key, v in data.values do
-		local entry = registry[key]
-		if entry then
-			if type(v) == "table" and v.color then v = Color3.fromRGB(v.r, v.g, v.b) end
-			-- skip no-op writes so untouched sliders don't override the game's own values
-			if v ~= entry.default or entry.value ~= entry.default or entry.resetApply then
-				setEntry(key, v)
-			end
-			count += 1
-		end
+	local keys = {}
+	for key in data.values do
+		if registry[key] then table.insert(keys, key) end
 	end
+	table.sort(keys)
+	local count = 0
+	for _, key in keys do
+		local entry, v = registry[key], data.values[key]
+		if type(v) == "table" and v.color then v = Color3.fromRGB(v.r, v.g, v.b) end
+		-- skip no-op writes so untouched sliders don't override the game's own values
+		if v ~= entry.default or entry.value ~= entry.default or entry.resetApply then
+			setEntry(key, v, true)
+		end
+		count += 1
+	end
+	dirtyAt = nil
 	return count
 end
 
+-- the menu toggle key is bound from the bottom bar, so it is registered by hand
+registry.menuToggleKey = {
+	value = ui.ToggleKey.Name, default = ui.ToggleKey.Name, resetApply = true,
+	control = { Set = function() end },
+	apply = function(name)
+		local code = name and Enum.KeyCode[name]
+		if code then ui:SetToggleKey(code) end
+	end,
+}
+
 local settings = ui:AddTab("Settings", "Settings", "🔧")
 
--- MENU: look + dock, just the essentials ------------------------------------------------
-local lookCell, dockCell = settings:AddQuad("Menu", "Menu", { "Look", "Dock" })
+-- MENU: look + dock ------------------------------------------------------------------------
+local lookMenuCell, dockCell = settings:AddQuad("Menu", "Menu", { "Look", "Dock" })
 
 local ACCENTS = {
 	Blue = Color3.fromRGB(53, 132, 228), Green = Color3.fromRGB(46, 194, 126),
@@ -638,22 +689,24 @@ local ACCENTS = {
 	Red = Color3.fromRGB(237, 51, 59), Pink = Color3.fromRGB(246, 116, 176),
 }
 local ACCENT_NAMES = { "Default", "Blue", "Green", "Purple", "Orange", "Red", "Pink" }
-local scheme, accentDrop = "Default", nil
+local scheme = "Default"
 
-lookCell:AddDropdown("Color Scheme", ui:GetThemeNames(), "Default", function(name)
+dropdown(lookMenuCell, "Color Scheme", "menuScheme", ui:GetThemeNames(), "Default", function(name)
 	scheme = name
 	ui:SetTheme(name)
-	accentDrop.Set("Default") -- a scheme brings its own accent
-end)
-accentDrop = lookCell:AddDropdown("Accent", ACCENT_NAMES, "Default", function(name)
+	-- a scheme brings its own accent
+	registry.menuTint.value = "Default"
+	registry.menuTint.control.Set("Default")
+end, true)
+dropdown(lookMenuCell, "Accent", "menuTint", ACCENT_NAMES, "Default", function(name)
 	if name == "Default" then ui:SetTheme(scheme) else ui:SetAccent(ACCENTS[name]) end
-end)
-lookCell:AddSlider("UI Scale %", 30, 160, 60, function(v) ui:SetUserScale(v / 100) end)
-lookCell:AddSlider("Transparency %", 0, 70, 0, function(v) ui:SetPanelTransparency(v / 100) end)
+end, true)
+slider(lookMenuCell, "UI Scale %", "menuScale", 30, 160, 60, function(v) ui:SetUserScale(v / 100) end, true)
+slider(lookMenuCell, "Transparency %", "menuTransp", 0, 70, 0, function(v) ui:SetPanelTransparency(v / 100) end, true)
 
-dockCell:AddDropdown("Dock Side", ui:GetDockSides(), "Left", function(side) ui:SetDockSide(side) end)
-dockCell:AddToggle("Auto-hide", true, function(on) ui:SetAutoHide(on) end)
-dockCell:AddSlider("Hide After (s)", 3, 60, 8, function(v) ui:SetIdleTime(v) end)
+dropdown(dockCell, "Dock Side", "menuDock", ui:GetDockSides(), "Left", function(side) ui:SetDockSide(side) end, true)
+toggle(dockCell, "Auto-hide", "menuAutoHide", true, function(on) ui:SetAutoHide(on) end, true)
+slider(dockCell, "Hide After (s)", "menuHideAfter", 3, 60, 8, function(v) ui:SetIdleTime(v) end, true)
 dockCell:AddButton("Reset Position", function() ui:ResetPosition() end)
 
 -- COMFORT: tab labels, spacing, alerts, detached tabs ---------------------------------------
@@ -679,16 +732,16 @@ comfortFloat:AddLabel("Or drag a tab out")
 
 -- KEYS: click a button, then press a key (Esc cancels, Backspace clears) ----------------
 local keyMainCell, keyMoreCell = settings:AddQuad("Keys", "Keys", { "Actions", "Camera & Menu" })
-local flyKey = keyMainCell:AddKeybind("Fly", Enum.KeyCode.F)
-local noclipKey = keyMainCell:AddKeybind("Noclip", Enum.KeyCode.N)
-local espKey = keyMainCell:AddKeybind("ESP", Enum.KeyCode.Z)
-local trackKey = keyMainCell:AddKeybind("Tracking", Enum.KeyCode.T)
-local freeCamKey = keyMainCell:AddKeybind("Free Cam", Enum.KeyCode.G)
+local flyKey = keybind(keyMainCell, "Fly", "keyFly", Enum.KeyCode.F)
+local noclipKey = keybind(keyMainCell, "Noclip", "keyNoclip", Enum.KeyCode.N)
+local espKey = keybind(keyMainCell, "ESP", "keyEsp", Enum.KeyCode.Z)
+local trackKey = keybind(keyMainCell, "Tracking", "keyTrack", Enum.KeyCode.T)
+local freeCamKey = keybind(keyMainCell, "Free Cam", "keyFreeCam", Enum.KeyCode.G)
 
-local specPrevKey = keyMoreCell:AddKeybind("Prev Player", Enum.KeyCode.LeftBracket)
-local specNextKey = keyMoreCell:AddKeybind("Next Player", Enum.KeyCode.RightBracket)
-local camStopKey = keyMoreCell:AddKeybind("Stop Camera", Enum.KeyCode.End)
-keyMoreCell:AddKeybind("Minimize Menu", nil, function(key) ui:SetMinimizeKey(key) end)
+local specPrevKey = keybind(keyMoreCell, "Prev Player", "keyPrev", Enum.KeyCode.LeftBracket)
+local specNextKey = keybind(keyMoreCell, "Next Player", "keyNext", Enum.KeyCode.RightBracket)
+local camStopKey = keybind(keyMoreCell, "Stop Camera", "keyStopCam", Enum.KeyCode.End)
+keybind(keyMoreCell, "Minimize Menu", "keyMinimize", nil, function(k) ui:SetMinimizeKey(k) end)
 keyMoreCell:AddLabel("Esc cancels, Backspace clears")
 
 local hotkeyConn = UserInputService.InputBegan:Connect(function(input, processed)
@@ -724,28 +777,60 @@ local hotkeyConn = UserInputService.InputBegan:Connect(function(input, processed
 	end
 end)
 
--- CONFIG: save / load everything, or put it all back ---------------------------------------
-local fileCell, resetCell = settings:AddQuad("Config", "Config", { "Save & Load", "Reset" })
-local cfgName = "default"
-fileCell:AddTextBox("Name", "default", function(text)
-	if text ~= "" then cfgName = text end
-end)
-fileCell:AddButton("Save", function()
-	local ok, err = Config.Save(cfgName, collect())
-	ui:Notify(ok and ("Saved '" .. cfgName .. "'") or ("Save failed: " .. tostring(err)))
-end)
-fileCell:AddButton("Load", function()
+-- CONFIG: save / load / share / reset --------------------------------------------------------
+local fileCell, shareCell, resetCell = settings:AddQuad("Config", "Config", { "Save & Load", "Share", "Reset" })
+
+local function saveNow(quiet)
+	local ok, where = Config.Save(cfgName, collect())
+	dirtyAt = nil
+	if not quiet then
+		ui:Notify(ok and ("Saved '" .. cfgName .. "' (" .. tostring(where) .. ")") or ("Save failed: " .. tostring(where)), 3.5)
+	end
+	return ok
+end
+
+local function loadNow()
 	local data, err = Config.Load(cfgName)
 	if data then
 		ui:Notify("Loaded '" .. cfgName .. "' (" .. applyConfig(data) .. " settings)")
 	else
-		ui:Notify("Load failed: " .. tostring(err))
+		ui:Notify("Load failed: " .. tostring(err), 3.5)
 	end
+end
+
+fileCell:AddTextBox("Name", cfgName, function(text)
+	if text ~= "" then cfgName = text end
 end)
-fileCell:AddToggle("Auto-load on start", false, function(on)
+fileCell:AddButton("Save", function() saveNow(false) end)
+fileCell:AddButton("Load", loadNow)
+fileCell:AddToggle("Auto-load on start", Config.GetAutoload() ~= nil, function(on)
 	Config.SetAutoload(on and cfgName or nil)
 	ui:Notify(on and ("Auto-load: " .. cfgName) or "Auto-load off")
 end)
+
+-- share: copy the whole config as text, or paste one in
+local shareBox = shareCell:AddTextBox("Text", "", function() end)
+shareCell:AddButton("Export (Copy)", function()
+	local text, err = Config.Encode(collect())
+	if not text then ui:Notify("Export failed: " .. tostring(err)) return end
+	if Config.Copy(text) then
+		ui:Notify("Config copied to the clipboard")
+	else
+		shareBox.Set(text)
+		ui:Notify("No clipboard here: text placed in the box")
+	end
+end)
+shareCell:AddButton("Import (From Box)", function()
+	local data, err = Config.Decode(shareBox.Get())
+	if data then
+		ui:Notify("Imported " .. applyConfig(data) .. " settings")
+	else
+		ui:Notify("Import failed: " .. tostring(err))
+	end
+end)
+
+toggle(resetCell, "Auto-save", "cfgAutosave", true, function() end, true)
+resetCell:AddLabel(Config.Describe())
 
 local resetArmed = false
 local function resetAll()
@@ -769,15 +854,32 @@ resetCell:AddButton("Reset Everything", function()
 	end
 	resetArmed = false
 	resetAll()
+	touch()
 end)
-resetCell:AddLabel("Back to the defaults")
 
--- apply the auto-load config (if one was set) once everything is built
+-- autosave: two quiet seconds after the last change, plus the toggle key (bound outside the registry)
+task.spawn(function()
+	while ui.Gui.Parent do
+		task.wait(1)
+		local tk = ui.ToggleKey and ui.ToggleKey.Name
+		if tk and tk ~= registry.menuToggleKey.value then
+			registry.menuToggleKey.value = tk
+			touch()
+		end
+		if registry.cfgAutosave.value and dirtyAt and os.clock() - dirtyAt >= 2 then
+			saveNow(true)
+		end
+	end
+end)
+
+-- apply the auto-load config once everything is built (falls back to a config named "default")
 do
 	local auto = Config.GetAutoload()
+	if not auto and Config.Exists("default") then auto = "default" end
 	if auto then
 		local data = Config.Load(auto)
 		if data then
+			cfgName = auto
 			applyConfig(data)
 			ui:Notify("Auto-loaded '" .. auto .. "'")
 		end
@@ -794,6 +896,7 @@ return {
 		pcall(function() guard:Destroy() end)
 		pcall(function() vehicle:Destroy() end)
 		pcall(function() mm2:Destroy() end)
+		pcall(function() audio:Destroy() end)
 		mods:Destroy()
 		ui:Destroy()
 	end,
