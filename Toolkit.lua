@@ -366,11 +366,22 @@ local function NewHost(parent)
 	table.insert(Insets, host.Frame)
 	applyInset(host.Frame)
 
-	function host:Add(key)
-		local page = New("Frame", {
-			Name = key, BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1),
-			Visible = false, Parent = self.Frame,
-		})
+	-- scrollX = the page scrolls sideways when its content is wider than the host (header sub-page buttons)
+	function host:Add(key, scrollX)
+		local page
+		if scrollX then
+			page = New("ScrollingFrame", {
+				Name = key, BackgroundTransparency = 1, BorderSizePixel = 0, Size = UDim2.fromScale(1, 1),
+				CanvasSize = UDim2.fromScale(0, 1), AutomaticCanvasSize = Enum.AutomaticSize.X,
+				ScrollingDirection = Enum.ScrollingDirection.X, ScrollBarThickness = 3,
+				VerticalScrollBarInset = Enum.ScrollBarInset.None, Visible = false, Parent = self.Frame,
+			})
+		else
+			page = New("Frame", {
+				Name = key, BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1),
+				Visible = false, Parent = self.Frame,
+			})
+		end
 		self.Pages[key] = page
 		return page
 	end

@@ -369,6 +369,8 @@ end)(import)
 --         SlideMode: "Auto" | "LeftToRight" | "RightToLeft",
 --         Theme (preset name), Accent (Color3), CornerRadius (px), Font (name), AnimSpeed
 --         Entrance (true): cards rise into place when a page opens
+--         StartMinimized (false): start with the bar out and the menu folded into it
+--         StartCollapsed (false): start as the edge widget only
 --         TabDisplay: "Icons" | "Text" | "Both" (what the sidebar tab buttons show)
 
 local Players = game:GetService("Players")
@@ -445,6 +447,23 @@ local function buildHeader(self, parent)
 	local bH, barFace = Shadowed(parent, "HeaderBar", "Frame", L.HeaderBar.Position, L.HeaderBar.Size, "Field", nil, nil, "header")
 	self.Parts.HeaderBar = bH
 	self.HeaderHost = NewHost(barFace)
+
+	-- mouse wheel over the header row glides the sub-page buttons sideways
+	-- (listens on the service: a button under the cursor swallows the wheel event)
+	table.insert(self._conns, UserInputService.InputChanged:Connect(function(input)
+		if input.UserInputType ~= Enum.UserInputType.MouseWheel then return end
+		if not self.IsOpen or self.Minimized then return end
+		local tab = self.Tabs[self.CurrentTab]
+		local bar = tab and tab.Bar
+		if not (bar and bar:IsA("ScrollingFrame") and bar.Visible) then return end
+		local m = UserInputService:GetMouseLocation()
+		local p, s = bar.AbsolutePosition, bar.AbsoluteSize
+		if m.X < p.X or m.X > p.X + s.X or m.Y < p.Y or m.Y > p.Y + s.Y then return end
+		local scale = math.max(self.UIScale.Scale, 0.01)
+		local maxX = math.max(0, (bar.AbsoluteCanvasSize.X - bar.AbsoluteWindowSize.X) / scale)
+		local x = math.clamp(bar.CanvasPosition.X - input.Position.Z * 110, 0, maxX)
+		Anim.Tween(bar, 0.18, { CanvasPosition = Vector2.new(x, 0) }, Enum.EasingStyle.Quint)
+	end))
 end
 
 local function buildSidebar(self, parent)
@@ -693,6 +712,14 @@ function GuiUI.new(config)
 		self:_enterWidget(false)
 	end
 
+	-- StartMinimized: the bar is out, the menu stays folded inside it (click the title to slide it out)
+	if config.StartMinimized and not config.StartCollapsed then
+		self.Minimized, self._panelOpen = true, false
+		self._hinted = true
+		self.Panel.Position = self:_collapsedPos()
+		self.Panel.Visible = false
+	end
+
 	task.spawn(function()
 		while self.Gui.Parent do
 			task.wait(0.25)
@@ -751,7 +778,7 @@ local function newTab(self, id, name, isBottom, icon)
 
 	local contentPage = self.MainHost:Add(id)
 	local subHost = NewHost(contentPage)
-	local barPage = self.HeaderHost:Add(id)
+	local barPage = self.HeaderHost:Add(id, true) -- scrolls sideways when there are many sub-page buttons
 	New("UIListLayout", {
 		FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6),
 		SortOrder = Enum.SortOrder.LayoutOrder, VerticalAlignment = Enum.VerticalAlignment.Center, Parent = barPage,
@@ -945,6 +972,25 @@ function Tab:SelectSub(id)
 	new.Button.SetActive(true)
 	self.SubHost:Show(id, self.UI:_dir(old and old.Order or 0, new.Order))
 	self.UI:_playEntrance(new)
+
+	-- keep the chosen button inside the scrolling header row (positions come from the layout numbers)
+	local bar = self.Bar
+	if bar:IsA("ScrollingFrame") then
+		local S = Theme.Size
+		local scale = math.max(self.UI.UIScale.Scale, 0.01)
+		local win = bar.AbsoluteWindowSize.X / scale
+		if win > 0 then
+			local left = S.Gap + (new.Order - 1) * (S.SmallW + 6)
+			local right = left + S.SmallW
+			local cur = bar.CanvasPosition.X
+			local target = cur
+			if left - 8 < cur then target = left - 8
+			elseif right + 8 > cur + win then target = right + 8 - win end
+			if target ~= cur then
+				Anim.Tween(bar, 0.3, { CanvasPosition = Vector2.new(math.max(0, target), 0) }, Enum.EasingStyle.Quint)
+			end
+		end
+	end
 end
 
 -------------------------------------------------------------------------------
