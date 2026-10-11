@@ -1,7 +1,7 @@
-## ** Instructions To Execute ** ##
+## Instructions To Execute ##
 
 ```
--- Loader.lua: run this in your executor. It downloads the 11 modules and starts App.
+-- Loader.lua: run this in your executor. It gets the modules and starts App.
 local base = "https://raw.githubusercontent.com/FISHYSHUN/Repo/refs/heads/main/"
 local env = (getgenv and getgenv()) or _G
 
