@@ -3,7 +3,7 @@
 -- so the loader can replace a running menu when you execute it again.
 --
 -- LAYOUT: one side tab per topic, every page is a small grid of cards ("quad") instead of a long list.
---   Player  World  Visuals  Tracking  Guard  Vehicle  Games  Info  Settings
+--   Player  World  Visuals  Vehicle  Games (MM2, Security, Tracking)  Info  Settings
 local import = ...
 
 local UserInputService = game:GetService("UserInputService")
@@ -17,6 +17,7 @@ local Vehicle = import("Vehicle")
 local Games = import("Games")
 local MM2 = import("MM2")
 local Audio = import("Audio")
+local Graphics = import("Graphics")
 
 local ui = GuiUI.new({
 	Title = "Player Menu",
@@ -347,81 +348,93 @@ local fillCell, outlineCell = visualsTab:AddQuad("Colors", "Colors", { "Fill", "
 color(fillCell, "Fill Color", "espFillColor", Color3.fromRGB(255, 60, 60), function(c) visuals:Set("FillColor", c) end, true)
 color(outlineCell, "Outline Color", "espOutlineColor", Color3.fromRGB(255, 255, 255), function(c) visuals:Set("OutlineColor", c) end, true)
 
--- TRACKING --------------------------------------------------------------------
-local tracking = ui:AddTab("Tracking", "Tracking", "🎯")
-local trackCell, pickCell, feelTrackCell, checkCell = tracking:AddQuad("Aim", "Aim", { "Track", "Target", "Feel", "Checks" })
+-- PERFORMANCE ---------------------------------------------------------------------
+local gfx = Graphics.new()
+local PERF_KEYS = { "gfxPostFX", "gfxParticles", "gfxLights", "gfxShadows", "gfxMaterials", "gfxTextures", "gfxWater" }
 
-toggle(trackCell, "Tracking", "trackEnabled", false, function(on) mods:SetTracking(on) end, true)
-dropdown(trackCell, "Activate", "trackMode", { "Hold Right Mouse", "Hold Left Mouse", "Always" }, "Hold Right Mouse",
-	function(v) mods:SetTrackOption("Mode", v) end, true)
-trackCell:AddLabel("Turns toward your cursor")
+local fxCell, worldCell, qualCell, dispCell = visualsTab:AddQuad("Performance", "Performance", { "Effects", "World", "Quality", "Display" })
 
-dropdown(pickCell, "Part", "trackPart", { "Head", "HumanoidRootPart", "UpperTorso" }, "Head",
-	function(v) mods:SetTrackOption("Part", v) end, true)
-dropdown(pickCell, "Pick By", "trackPriority", { "Cursor", "Distance", "Health" }, "Cursor",
-	function(v) mods:SetTrackOption("Priority", v) end, true)
+toggle(fxCell, "Disable Post FX", "gfxPostFX", false, function(on) gfx:Set("PostFX", on) end, true)
+toggle(fxCell, "No Particles", "gfxParticles", false, function(on) gfx:Set("Particles", on) end, true)
+toggle(fxCell, "No Lights", "gfxLights", false, function(on) gfx:Set("Lights", on) end, true)
+fxCell:AddLabel("Bloom, blur, rays, trails, fire")
 
-slider(feelTrackCell, "Speed", "trackSpeed", 1, 40, 12, function(v) mods:SetTrackOption("Speed", v) end, true)
-slider(feelTrackCell, "FOV (px)", "trackFov", 30, 800, 250, function(v) mods:SetTrackOption("FOV", v) end, true)
+toggle(worldCell, "No Shadows", "gfxShadows", false, function(on) gfx:Set("Shadows", on) end, true)
+toggle(worldCell, "Flat Materials", "gfxMaterials", false, function(on) gfx:Set("Materials", on) end, true)
+toggle(worldCell, "Hide Textures", "gfxTextures", false, function(on) gfx:Set("Textures", on) end, true)
+toggle(worldCell, "Calm Water", "gfxWater", false, function(on) gfx:Set("Water", on) end, true)
+worldCell:AddLabel("Characters keep their look")
 
-toggle(checkCell, "Show FOV Circle", "trackShowFov", false, function(on) mods:SetTrackOption("ShowFOV", on) end, true)
-toggle(checkCell, "Team Check", "trackTeamCheck", true, function(on) mods:SetTrackOption("TeamCheck", on) end, true)
-toggle(checkCell, "Wall Check", "trackWallCheck", false, function(on) mods:SetTrackOption("WallCheck", on) end, true)
-
--- GUARD -----------------------------------------------------------------------
-local guardTab = ui:AddTab("Guard", "Guard", "🛡")
-local watchCell, guardChecks, shieldCell, flagCell = guardTab:AddQuad("Guard", "Guard", { "Watch", "Checks", "Shield", "Flags" })
-
-local flaggedLabel, lastLabel
-local function refreshFlags()
-	local list = guard:GetFlagged()
-	flaggedLabel.Text = "Flagged: " .. #list
-	local last = list[#list]
-	local rec = last and guard:GetRecord(last)
-	lastLabel.Text = rec and ("Last: " .. last.Name .. " (" .. rec.Last .. ")") or "Last: none"
-end
-
-toggle(watchCell, "Watch Players", "guardMonitor", false, function(on)
-	guard:Set("Monitor", on)
-	ui:Notify("Guard watch " .. onOff(on))
+toggle(qualCell, "Lowest Quality", "gfxLowest", false, function(on)
+	gfx:Set("Lowest", on)
+	if on and registry.clarityMax.value then setEntry("clarityMax", false) end
 end, true)
-toggle(watchCell, "Alerts", "guardAlerts", true, function(on) guard:Set("Alerts", on) end, true)
-toggle(watchCell, "Highlight Flagged", "guardColor", true, function(on) visuals:Set("FlagColor", on) end, true)
-slider(watchCell, "Strikes To Flag", "guardStrikes", 2, 10, 4, function(v) guard:Set("StrikesToFlag", v) end, true)
-
-toggle(guardChecks, "Speed", "guardSpeed", true, function(on) guard:Set("Speed", on) end, true)
-toggle(guardChecks, "Fly", "guardFly", true, function(on) guard:Set("Fly", on) end, true)
-toggle(guardChecks, "Teleport", "guardTeleport", true, function(on) guard:Set("Teleport", on) end, true)
-toggle(guardChecks, "Fling", "guardFling", true, function(on) guard:Set("Fling", on) end, true)
-toggle(guardChecks, "Spin", "guardSpin", true, function(on) guard:Set("Spin", on) end, true)
-slider(guardChecks, "Speed Tolerance %", "guardTolerance", 120, 400, 200, function(v) guard:Set("SpeedTolerance", v) end, true)
-slider(guardChecks, "Spin Min rad/s", "guardSpinMin", 4, 40, 10, function(v) guard:Set("SpinMin", v) end, true)
-
-toggle(shieldCell, "No Player Collision", "guardNoCollide", false, function(on)
-	guard:Set("NoCollide", on)
-	ui:Notify("Player collision " .. (on and "off" or "on"))
+toggle(qualCell, "Pause 3D Rendering", "gfxNoRender", false, function(on)
+	gfx:Set("NoRender", on)
+	ui:Notify("3D rendering " .. (on and "paused" or "back"))
 end, true)
-toggle(shieldCell, "Anti-Fling", "guardAntiFling", false, function(on) guard:Set("AntiFling", on) end, true)
-shieldCell:AddLabel("No pushing, spin or launch")
-toggle(shieldCell, "Anti-Void", "guardAntiVoid", false, function(on) guard:Set("AntiVoid", on) end, true)
-toggle(shieldCell, "Block Forced TP", "guardAntiSnap", false, function(on) guard:Set("AntiSnap", on) end, true)
-slider(shieldCell, "Max Self Speed", "guardMaxSpeed", 100, 600, 250, function(v) guard:Set("MaxSelfSpeed", v) end, true)
+qualCell:AddLabel("Pause = black screen, menu stays")
 
-flaggedLabel = flagCell:AddLabel("Flagged: 0")
-lastLabel = flagCell:AddLabel("Last: none")
-flagCell:AddButton("Spectate Last", function()
-	local list = guard:GetFlagged()
-	local p = list[#list]
-	if p and mods:Spectate(p) then ui:Notify("Spectating " .. p.DisplayName) else ui:Notify("Nobody flagged") end
+toggle(dispCell, "FPS Cap", "gfxCapOn", false, function(on) gfx:Set("FpsCap", on) end, true)
+slider(dispCell, "Cap Value", "gfxCap", 30, 1000, 144, function(v) gfx:Set("FpsValue", v) end, true)
+if not gfx:HasFpsCap() then dispCell:AddLabel("Needs setfpscap support") end
+dispCell:AddButton("Max FPS Preset", function()
+	for _, key in PERF_KEYS do setEntry(key, true) end
+	setEntry("gfxLowest", true)
+	ui:Notify("Max FPS preset on")
 end)
-flagCell:AddButton("Clear Flags", function()
-	guard:ClearFlags()
-	ui:Notify("Flags cleared")
+dispCell:AddButton("Restore All", function()
+	for _, key in PERF_KEYS do setEntry(key, false) end
+	setEntry("gfxLowest", false)
+	setEntry("gfxNoRender", false)
+	setEntry("gfxCapOn", false)
+	ui:Notify("Performance restored")
 end)
 
-guard.OnChange = refreshFlags
--- shown once per player + cheat type
-guard.OnFlag = function(p, kind) ui:Notify("Player " .. p.Name .. " Detected " .. kind, 4) end
+-- CLARITY -------------------------------------------------------------------------
+local colorCell, lightCell2, lensCell, clarQualCell = visualsTab:AddQuad("Clarity", "Clarity", { "Color", "Light", "Lens", "Quality" })
+
+toggle(colorCell, "Enhance", "clarityOn", false, function(on) gfx:Set("Clarity", on) end, true)
+slider(colorCell, "Contrast %", "clarityContrast", 0, 50, 10, function(v) gfx:Set("Contrast", v) end, true)
+slider(colorCell, "Saturation %", "claritySat", 0, 50, 10, function(v) gfx:Set("Saturation", v) end, true)
+slider(colorCell, "Brightness %", "clarityBright", -20, 30, 0, function(v) gfx:Set("Brightness", v) end, true)
+
+slider(lightCell2, "Bloom %", "clarityBloom", 0, 100, 20, function(v) gfx:Set("Bloom", v) end, true)
+slider(lightCell2, "Sun Rays %", "claritySun", 0, 100, 25, function(v) gfx:Set("SunRays", v) end, true)
+slider(lightCell2, "Exposure", "clarityExposure", -10, 10, 0, function(v) gfx:Set("Exposure", v) end, true)
+
+toggle(lensCell, "Clear Haze / Fog", "clarityHaze", false, function(on) gfx:Set("ClearHaze", on) end, true)
+toggle(lensCell, "Remove Blur", "clarityBlur", false, function(on) gfx:Set("RemoveBlur", on) end, true)
+lensCell:AddLabel("Blur and depth of field")
+
+toggle(clarQualCell, "Max Quality", "clarityMax", false, function(on)
+	gfx:Set("MaxQuality", on)
+	if on and registry.gfxLowest.value then setEntry("gfxLowest", false) end
+end, true)
+clarQualCell:AddButton("Crisp Preset", function()
+	setEntry("clarityOn", true)
+	setEntry("clarityContrast", 15)
+	setEntry("claritySat", 12)
+	setEntry("clarityBright", 3)
+	setEntry("clarityBloom", 15)
+	setEntry("claritySun", 20)
+	setEntry("clarityHaze", true)
+	setEntry("clarityBlur", true)
+	setEntry("clarityMax", true)
+	ui:Notify("Crisp preset on")
+end)
+clarQualCell:AddButton("Reset Clarity", function()
+	setEntry("clarityOn", false)
+	setEntry("clarityContrast", 10)
+	setEntry("claritySat", 10)
+	setEntry("clarityBright", 0)
+	setEntry("clarityBloom", 20)
+	setEntry("claritySun", 25)
+	setEntry("clarityExposure", 0)
+	setEntry("clarityHaze", false)
+	setEntry("clarityBlur", false)
+	setEntry("clarityMax", false)
+end)
 
 -- VEHICLE ---------------------------------------------------------------------
 -- Sit in any vehicle: it is classified (Car / Bike / Boat / Aircraft) and the mode you pick is read per type.
@@ -582,6 +595,80 @@ toggle(gCoinCell, "Auto Coins", "mm2Coins", false, function(on)
 end, true)
 slider(gCoinCell, "Delay (ms)", "mm2CoinDelay", 200, 1500, 700, function(v) mm2:Set("CoinDelay", v) end, true)
 gCoinCell:AddLabel("Teleports to each coin in turn")
+
+-- SECURITY (formerly the Guard tab) ----------------------------------------------
+local watchCell, guardChecks, shieldCell, flagCell = gamesTab:AddQuad("Security", "Security", { "Watch", "Checks", "Shield", "Flags" })
+
+local flaggedLabel, lastLabel
+local function refreshFlags()
+	local list = guard:GetFlagged()
+	flaggedLabel.Text = "Flagged: " .. #list
+	local last = list[#list]
+	local rec = last and guard:GetRecord(last)
+	lastLabel.Text = rec and ("Last: " .. last.Name .. " (" .. rec.Last .. ")") or "Last: none"
+end
+
+toggle(watchCell, "Watch Players", "guardMonitor", false, function(on)
+	guard:Set("Monitor", on)
+	ui:Notify("Guard watch " .. onOff(on))
+end, true)
+toggle(watchCell, "Alerts", "guardAlerts", true, function(on) guard:Set("Alerts", on) end, true)
+toggle(watchCell, "Highlight Flagged", "guardColor", true, function(on) visuals:Set("FlagColor", on) end, true)
+slider(watchCell, "Strikes To Flag", "guardStrikes", 2, 10, 4, function(v) guard:Set("StrikesToFlag", v) end, true)
+
+toggle(guardChecks, "Speed", "guardSpeed", true, function(on) guard:Set("Speed", on) end, true)
+toggle(guardChecks, "Fly", "guardFly", true, function(on) guard:Set("Fly", on) end, true)
+toggle(guardChecks, "Teleport", "guardTeleport", true, function(on) guard:Set("Teleport", on) end, true)
+toggle(guardChecks, "Fling", "guardFling", true, function(on) guard:Set("Fling", on) end, true)
+toggle(guardChecks, "Spin", "guardSpin", true, function(on) guard:Set("Spin", on) end, true)
+slider(guardChecks, "Speed Tolerance %", "guardTolerance", 120, 400, 200, function(v) guard:Set("SpeedTolerance", v) end, true)
+slider(guardChecks, "Spin Min rad/s", "guardSpinMin", 4, 40, 10, function(v) guard:Set("SpinMin", v) end, true)
+
+toggle(shieldCell, "No Player Collision", "guardNoCollide", false, function(on)
+	guard:Set("NoCollide", on)
+	ui:Notify("Player collision " .. (on and "off" or "on"))
+end, true)
+toggle(shieldCell, "Anti-Fling", "guardAntiFling", false, function(on) guard:Set("AntiFling", on) end, true)
+shieldCell:AddLabel("No pushing, spin or launch")
+toggle(shieldCell, "Anti-Void", "guardAntiVoid", false, function(on) guard:Set("AntiVoid", on) end, true)
+toggle(shieldCell, "Block Forced TP", "guardAntiSnap", false, function(on) guard:Set("AntiSnap", on) end, true)
+slider(shieldCell, "Max Self Speed", "guardMaxSpeed", 100, 600, 250, function(v) guard:Set("MaxSelfSpeed", v) end, true)
+
+flaggedLabel = flagCell:AddLabel("Flagged: 0")
+lastLabel = flagCell:AddLabel("Last: none")
+flagCell:AddButton("Spectate Last", function()
+	local list = guard:GetFlagged()
+	local p = list[#list]
+	if p and mods:Spectate(p) then ui:Notify("Spectating " .. p.DisplayName) else ui:Notify("Nobody flagged") end
+end)
+flagCell:AddButton("Clear Flags", function()
+	guard:ClearFlags()
+	ui:Notify("Flags cleared")
+end)
+
+guard.OnChange = refreshFlags
+-- shown once per player + cheat type
+guard.OnFlag = function(p, kind) ui:Notify("Player " .. p.Name .. " Detected " .. kind, 4) end
+
+-- TRACKING (a page of the Games tab) ----------------------------------------------
+local trackCell, pickCell, feelTrackCell, checkCell = gamesTab:AddQuad("Tracking", "Tracking", { "Aim", "Target", "Feel", "Checks" })
+
+toggle(trackCell, "Tracking", "trackEnabled", false, function(on) mods:SetTracking(on) end, true)
+dropdown(trackCell, "Activate", "trackMode", { "Hold Right Mouse", "Hold Left Mouse", "Always" }, "Hold Right Mouse",
+	function(v) mods:SetTrackOption("Mode", v) end, true)
+trackCell:AddLabel("Turns toward your cursor")
+
+dropdown(pickCell, "Part", "trackPart", { "Head", "HumanoidRootPart", "UpperTorso" }, "Head",
+	function(v) mods:SetTrackOption("Part", v) end, true)
+dropdown(pickCell, "Pick By", "trackPriority", { "Cursor", "Distance", "Health" }, "Cursor",
+	function(v) mods:SetTrackOption("Priority", v) end, true)
+
+slider(feelTrackCell, "Speed", "trackSpeed", 1, 40, 12, function(v) mods:SetTrackOption("Speed", v) end, true)
+slider(feelTrackCell, "FOV (px)", "trackFov", 30, 800, 250, function(v) mods:SetTrackOption("FOV", v) end, true)
+
+toggle(checkCell, "Show FOV Circle", "trackShowFov", false, function(on) mods:SetTrackOption("ShowFOV", on) end, true)
+toggle(checkCell, "Team Check", "trackTeamCheck", true, function(on) mods:SetTrackOption("TeamCheck", on) end, true)
+toggle(checkCell, "Wall Check", "trackWallCheck", false, function(on) mods:SetTrackOption("WallCheck", on) end, true)
 
 -- INFO ------------------------------------------------------------------------
 local info = ui:AddTab("Info", "Info", "📊")
@@ -897,6 +984,7 @@ return {
 		pcall(function() vehicle:Destroy() end)
 		pcall(function() mm2:Destroy() end)
 		pcall(function() audio:Destroy() end)
+		pcall(function() gfx:Destroy() end)
 		mods:Destroy()
 		ui:Destroy()
 	end,
