@@ -472,7 +472,7 @@ local function buildSidebar(self, parent)
 	self.Parts.Sidebar = holder
 	local list = New("ScrollingFrame", {
 		Name = "TabList", BackgroundTransparency = 1, BorderSizePixel = 0, Size = UDim2.fromScale(1, 1),
-		CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollBarThickness = 3, Parent = face,
+		CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollBarThickness = 0, Parent = face,
 	})
 	self.TabListPad = New("UIPadding", {
 		PaddingTop = UDim.new(0, 8), PaddingBottom = UDim.new(0, 8),

@@ -3,7 +3,7 @@
 -- so the loader can replace a running menu when you execute it again.
 --
 -- LAYOUT: one side tab per topic, every page is a small grid of cards ("quad") instead of a long list.
---   Player  World  Visuals  Vehicle  Games (MM2, Security, Tracking)  Info  Settings
+--   Player  World  Visuals  Vehicle  Games (Game, MM2, NDS, Security, Tracking)  Info  Settings
 local import = ...
 
 local UserInputService = game:GetService("UserInputService")
@@ -15,8 +15,8 @@ local Visuals, Effects, Graphics, Audio = Extras.Visuals, Extras.Effects, Extras
 local Config = import("Config")
 local Guard = import("Guard")
 local Vehicle = import("Vehicle")
-local Games = import("Games") -- Games.MM2 is the Murder Mystery 2 helper
-local MM2 = Games.MM2
+local Games = import("Games") -- Games.MM2 / Games.NDS are the per-game helpers
+local MM2, NDS = Games.MM2, Games.NDS
 
 local ui = GuiUI.new({
 	Title = "Player Menu",
@@ -568,24 +568,39 @@ vehicle.OnChanged = function(info, vals)
 end
 
 -- GAMES -----------------------------------------------------------------------------
--- Murder Mystery 2. (More games: add an entry to Games.List, a module like MM2.lua and a quad here.)
+-- Pages: Game (what was detected), MM2 (merged MM2 + MM2+), NDS, Security, Tracking.
+-- More games: add an entry to Games.List, a helper class in Games.lua and a page here.
 local mm2 = MM2.new()
 mm2.Teleport = function(cf) return mods:TeleportTo(cf) end -- goes through the guard exemption + undo
+local nds = NDS.new()
+nds.Teleport = function(cf) return mods:TeleportTo(cf) end
 local detected = Games.Detect()
+local inNDS = detected ~= nil and detected.Id == "NDS"
+nds.Active = inNDS -- the NDS helper does nothing outside its game
 
 local gamesTab = ui:AddTab("Games", "Games", "🎮")
-local gStatusCell, gRoleCell, gGunCell, gCoinCell = gamesTab:AddQuad("MM2", "MM2", { "Status", "Roles", "Gun", "Coins" })
+
+-- GAME (detection) ----------------------------------------------------------------------
+local gameCell = gamesTab:AddQuad("Game", "Game", { "Detected" })
+gameCell:AddLabel("Game: " .. (detected and detected.Name or "not recognised"))
+toggle(gameCell, "Auto-Enable In Game", "gameAuto", true, function() end, true)
+gameCell:AddLabel("Turns the game's main features on")
+gameCell:AddLabel("MM2: Role ESP + Gun Drop ESP")
+gameCell:AddLabel("NDS: NDS Features")
+if not detected then gameCell:AddLabel("Supported: MM2, NDS") end
+
+-- MM2 (merged page: former MM2 + MM2+) ---------------------------------------------------
+local gRoleCell, gGunCell, gCoinCell, gCombatCell = gamesTab:AddQuad("MM2", "MM2", { "Roles", "Gun", "Coins", "Combat" })
 
 local coinsLabel -- created with the Coins card below
-gStatusCell:AddLabel("Game: " .. (detected and detected.Name or "not recognised"))
-local murdererLabel = gStatusCell:AddLabel("Murderer: ?")
-local sheriffLabel = gStatusCell:AddLabel("Sheriff: ?")
-gStatusCell:AddButton("Clear Roles", function()
+local murdererLabel = gRoleCell:AddLabel("Murderer: ?")
+local sheriffLabel = gRoleCell:AddLabel("Sheriff: ?")
+gRoleCell:AddButton("Clear Roles", function()
 	mm2:ClearRoles()
 	murdererLabel.Text, sheriffLabel.Text = "Murderer: ?", "Sheriff: ?"
 	if coinsLabel then coinsLabel.Text = "Coins taken: 0" end
 end)
-if not detected or detected.Id ~= "MM2" then gStatusCell:AddLabel("Only works inside MM2") end
+if not (detected and detected.Id == "MM2") then gRoleCell:AddLabel("Only works inside MM2") end
 
 mm2.OnRole = function(p, role)
 	local label = role == "Murderer" and murdererLabel or sheriffLabel
@@ -597,13 +612,23 @@ end
 mm2.OnGun = function()
 	if mm2.Settings.Alerts and mm2.Settings.GunESP then ui:Notify("The gun was dropped!", 4) end
 end
+mm2.OnProximity = function(p, dist)
+	if mm2.Settings.Alerts then
+		ui:Notify(p.DisplayName .. " (Murderer) is " .. math.round(dist) .. " studs away!", 3)
+	end
+end
 
+-- roles
 toggle(gRoleCell, "Role ESP", "mm2Roles", false, function(on) mm2:Set("RoleESP", on) end, true)
 toggle(gRoleCell, "Show Innocents", "mm2Innocents", false, function(on) mm2:Set("Innocents", on) end, true)
 toggle(gRoleCell, "Name Tags", "mm2Tags", true, function(on) mm2:Set("Tags", on) end, true)
 toggle(gRoleCell, "Role Alerts", "mm2Alerts", true, function(on) mm2:Set("Alerts", on) end, true)
-gRoleCell:AddLabel("Learned from the Knife / Gun held")
+toggle(gRoleCell, "Role Tracers", "mm2Tracers", false, function(on) mm2:Set("Tracers", on) end, true)
+if not mm2:HasDrawing() then gRoleCell:AddLabel("Tracers need Drawing support") end
+toggle(gRoleCell, "Trap ESP", "mm2TrapEsp", false, function(on) mm2:Set("TrapESP", on) end, true)
+gRoleCell:AddLabel("Roles come from the Knife / Gun held")
 
+-- gun + danger
 toggle(gGunCell, "Gun Drop ESP", "mm2GunEsp", false, function(on) mm2:Set("GunESP", on) end, true)
 toggle(gGunCell, "Return After Grab", "mm2Return", true, function(on) mm2:Set("ReturnAfterGun", on) end, true)
 toggle(gGunCell, "Auto Grab Gun", "mm2AutoGun", false, function(on) mm2:Set("AutoGrabGun", on) end, true)
@@ -611,32 +636,42 @@ gGunCell:AddButton("Grab Gun", function()
 	local ok, err = mm2:GrabGun()
 	ui:Notify(ok and "Fetching the gun..." or err)
 end)
+toggle(gGunCell, "Murderer Nearby", "mm2Proximity", false, function(on) mm2:Set("Proximity", on) end, true)
+slider(gGunCell, "Warn Distance", "mm2ProxDist", 10, 100, 35, function(v) mm2:Set("ProximityDistance", v) end, true)
+gGunCell:AddLabel("Needs the Murderer to be known")
 
+-- coins
 toggle(gCoinCell, "Auto Coins", "mm2Coins", false, function(on)
 	mm2:Set("AutoCoins", on)
 	ui:Notify("Auto coins " .. onOff(on))
 end, true)
 slider(gCoinCell, "Delay (ms)", "mm2CoinDelay", 200, 1500, 700, function(v) mm2:Set("CoinDelay", v) end, true)
 dropdown(gCoinCell, "Mode", "mm2CoinMode", { "Teleport", "Walk" }, "Teleport", function(v) mm2:Set("CoinMode", v) end, true)
+toggle(gCoinCell, "Safe Farm", "mm2SafeFarm", false, function(on) mm2:Set("SafeFarm", on) end, true)
+slider(gCoinCell, "Safe Distance", "mm2SafeDist", 15, 120, 40, function(v) mm2:Set("SafeDistance", v) end, true)
+gCoinCell:AddLabel("Skips coins near the Murderer")
 toggle(gCoinCell, "Coin ESP", "mm2CoinEsp", false, function(on) mm2:Set("CoinESP", on) end, true)
+toggle(gCoinCell, "No Delay", "mm2NoDelay", false, function(on)
+	mm2:Set("NoDelay", on)
+	ui:Notify("No delay " .. onOff(on))
+end, true)
+gCoinCell:AddLabel("Coins back to back, instant prompts")
 coinsLabel = gCoinCell:AddLabel("Coins taken: 0")
 mm2.OnCoin = function(n) coinsLabel.Text = "Coins taken: " .. n end
 
--- MM2 extras: role tracers, murderer proximity warning, travel to a role, no-delay options
-local mTraceCell, mDangerCell, mTravelCell, mFastCell = gamesTab:AddQuad("MM2Plus", "MM2+", { "Tracers", "Danger", "Travel", "Fast" })
-
-toggle(mTraceCell, "Role Tracers", "mm2Tracers", false, function(on) mm2:Set("Tracers", on) end, true)
-mTraceCell:AddLabel("Lines to Murderer / Sheriff")
-if not mm2:HasDrawing() then mTraceCell:AddLabel("Needs Drawing support") end
-
-mm2.OnProximity = function(p, dist)
-	if mm2.Settings.Alerts then
-		ui:Notify(p.DisplayName .. " (Murderer) is " .. math.round(dist) .. " studs away!", 3)
-	end
-end
-toggle(mDangerCell, "Murderer Nearby", "mm2Proximity", false, function(on) mm2:Set("Proximity", on) end, true)
-slider(mDangerCell, "Warn Distance", "mm2ProxDist", 10, 100, 35, function(v) mm2:Set("ProximityDistance", v) end, true)
-mDangerCell:AddLabel("Needs the Murderer to be known")
+-- combat + travel
+toggle(gCombatCell, "Knife Hitbox", "mm2Hitbox", false, function(on)
+	mm2:Set("Hitbox", on)
+	ui:Notify("Knife hitbox " .. onOff(on))
+end, true)
+slider(gCombatCell, "Hitbox Size", "mm2HitboxSize", 2, 40, 12, function(v) mm2:Set("HitboxSize", v) end, true)
+toggle(gCombatCell, "Show Hitbox", "mm2HitboxShow", false, function(on) mm2:Set("HitboxShow", on) end, true)
+gCombatCell:AddLabel("Hold the Knife; the server may still check")
+toggle(gCombatCell, "No Shoot Delay", "mm2NoShoot", false, function(on)
+	mm2:Set("NoShootDelay", on)
+	ui:Notify("No shoot delay " .. onOff(on))
+end, true)
+gCombatCell:AddLabel("Re-equips the gun; a server cooldown stays")
 
 local function goRole(role)
 	local p = mm2:GetByRole(role)
@@ -647,31 +682,71 @@ local function watchRole(role)
 	local p = mm2:GetByRole(role)
 	if p and mods:Spectate(p) then ui:Notify("Spectating " .. p.DisplayName) else ui:Notify(role .. " not known yet") end
 end
-mTravelCell:AddButton("Go To Sheriff", function() goRole("Sheriff") end)
-mTravelCell:AddButton("Go To Murderer", function() goRole("Murderer") end)
-mTravelCell:AddButton("Spectate Murderer", function() watchRole("Murderer") end)
-mTravelCell:AddButton("Spectate Sheriff", function() watchRole("Sheriff") end)
-mTravelCell:AddButton("Stop Camera", function() mods:StopCamera() end)
-mTravelCell:AddButton("Save Safe Spot", function()
+gCombatCell:AddButton("Go To Sheriff", function() goRole("Sheriff") end)
+gCombatCell:AddButton("Go To Murderer", function() goRole("Murderer") end)
+gCombatCell:AddButton("Spectate Murderer", function() watchRole("Murderer") end)
+gCombatCell:AddButton("Spectate Sheriff", function() watchRole("Sheriff") end)
+gCombatCell:AddButton("Stop Camera", function() mods:StopCamera() end)
+gCombatCell:AddButton("Save Safe Spot", function()
 	local ok, err = mm2:SetSafeSpot()
 	ui:Notify(ok and "Safe spot saved" or err)
 end)
-mTravelCell:AddButton("Go To Safe Spot", function()
+gCombatCell:AddButton("Go To Safe Spot", function()
 	local ok, err = mm2:GoSafe()
 	if not ok then ui:Notify(err) end
 end)
 
-toggle(mFastCell, "No Delay", "mm2NoDelay", false, function(on)
-	mm2:Set("NoDelay", on)
-	ui:Notify("No delay " .. onOff(on))
+-- NDS: only usable inside Natural Disaster Survival ---------------------------------------
+local nStatusCell, nSafeCell, nGoCell, nHazardCell = gamesTab:AddQuad("NDS", "NDS", { "Status", "Safety", "Travel", "Hazards" })
+
+local disasterLabel = nStatusCell:AddLabel("Disaster: None")
+nStatusCell:AddLabel(inNDS and "Game: Natural Disaster Survival" or "Only works inside NDS")
+toggle(nStatusCell, "NDS Features", "ndsOn", false, function(on)
+	if on and not nds.Active then
+		ui:Notify("Join Natural Disaster Survival first")
+		task.defer(function() setEntry("ndsOn", false) end)
+		return
+	end
+	nds:SetEnabled(on)
+	ui:Notify("NDS features " .. onOff(on))
 end, true)
-mFastCell:AddLabel("Coins back to back, instant prompts")
-toggle(mFastCell, "No Shoot Delay", "mm2NoShoot", false, function(on)
-	mm2:Set("NoShootDelay", on)
-	ui:Notify("No shoot delay " .. onOff(on))
-end, true)
-mFastCell:AddLabel("Re-equips the gun after a shot")
-mFastCell:AddLabel("Client side: a server cooldown stays")
+toggle(nStatusCell, "Disaster Alerts", "ndsAlerts", true, function(on) nds:Set("Alerts", on) end, true)
+toggle(nStatusCell, "Debug Prints", "ndsDebug", false, function(on) nds:Set("Debug", on) end, true)
+
+toggle(nSafeCell, "Auto High Ground", "ndsAutoHigh", true, function(on) nds:Set("AutoHigh", on) end, true)
+nSafeCell:AddLabel("Flood / Tsunami: go to the top")
+toggle(nSafeCell, "No Fall Damage", "ndsNoFall", true, function(on) nds:Set("NoFallDamage", on) end, true)
+nSafeCell:AddLabel("Slows the landing, not the fall")
+toggle(nSafeCell, "Water Walk", "ndsWaterWalk", true, function(on) nds:Set("WaterWalk", on) end, true)
+nSafeCell:AddLabel("Stand on water (client side)")
+
+nGoCell:AddButton("Go High Now", function()
+	local ok, err = nds:GoHigh()
+	ui:Notify(ok and "Finding the highest spot..." or err)
+end)
+nGoCell:AddButton("Save Spot", function()
+	local ok, err = nds:SetSpot()
+	ui:Notify(ok and "Spot saved" or err)
+end)
+nGoCell:AddButton("Go To Spot", function()
+	local ok, err = nds:GoSpot()
+	if not ok then ui:Notify(err or "Could not teleport") end
+end)
+nGoCell:AddButton("Undo Teleport", function()
+	ui:Notify(mods:UndoTeleport() and "Went back" or "Nothing to undo")
+end)
+
+toggle(nHazardCell, "Hazard ESP", "ndsHazards", true, function(on) nds:Set("HazardESP", on) end, true)
+nHazardCell:AddLabel("Tornado / meteor / fireball / lava")
+nHazardCell:AddLabel("Shown while a disaster runs")
+
+nds.OnDisaster = function(name)
+	disasterLabel.Text = "Disaster: " .. (name or "None")
+	if nds.Settings.Alerts then
+		ui:Notify(name and ("Disaster: " .. name) or "Disaster over", 4)
+	end
+end
+nds.OnHigh = function() ui:Notify("High ground found") end
 
 -- SECURITY (formerly the Guard tab) ----------------------------------------------
 local watchCell, guardChecks, shieldCell, flagCell = gamesTab:AddQuad("Security", "Security", { "Watch", "Checks", "Shield", "Flags" })
@@ -1050,6 +1125,17 @@ do
 	end
 end
 
+-- game check: inside a recognised game its main features switch on by themselves (Games > Game > Auto-Enable).
+-- Runs after the auto-load config, so a saved config cannot switch them back off.
+do
+	local AUTO = { NDS = { "ndsOn" }, MM2 = { "mm2Roles", "mm2GunEsp" } }
+	local keys = detected and AUTO[detected.Id]
+	if keys and registry.gameAuto and registry.gameAuto.value then
+		for _, key in keys do setEntry(key, true, true) end
+		ui:Notify("Detected " .. detected.Name .. ": features on", 3.5)
+	end
+end
+
 -- handle returned to the loader: running the loader again calls this first
 return {
 	UI = ui,
@@ -1060,6 +1146,7 @@ return {
 		pcall(function() guard:Destroy() end)
 		pcall(function() vehicle:Destroy() end)
 		pcall(function() mm2:Destroy() end)
+		pcall(function() nds:Destroy() end)
 		pcall(function() audio:Destroy() end)
 		pcall(function() gfx:Destroy() end)
 		pcall(function() fx:Destroy() end)

@@ -373,7 +373,7 @@ local function NewHost(parent)
 			page = New("ScrollingFrame", {
 				Name = key, BackgroundTransparency = 1, BorderSizePixel = 0, Size = UDim2.fromScale(1, 1),
 				CanvasSize = UDim2.fromScale(0, 1), AutomaticCanvasSize = Enum.AutomaticSize.X,
-				ScrollingDirection = Enum.ScrollingDirection.X, ScrollBarThickness = 3,
+				ScrollingDirection = Enum.ScrollingDirection.X, ScrollBarThickness = 0,
 				VerticalScrollBarInset = Enum.ScrollBarInset.None, Visible = false, Parent = self.Frame,
 			})
 		else

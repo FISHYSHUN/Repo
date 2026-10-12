@@ -1,5 +1,5 @@
--- modules/Games.lua  (merged: MM2 + Games)
--- local Games = import("Games");  Games.Detect(), Games.List, Games.MM2 (the MM2 class)
+-- modules/Games.lua  (merged: MM2 + NDS + Games)
+-- local Games = import("Games");  Games.Detect(), Games.Is(id), Games.List, Games.MM2 / Games.NDS (the helper classes)
 local import = ...
 
 -- ======== MM2 (merged) ========
@@ -18,7 +18,11 @@ local MM2 = (function(...)
 --   Movement     : walk speed, jump power, noclip, infinite jump, anti-AFK.
 --   Navigation   : teleport to a player / role, save a safe spot and jump to it, spectate a player / role.
 --   No shoot delay: re-equips the Gun right after each shot to reset the tool's own client-side cooldown.
--- Instance names (Knife, Gun, GunDrop, CoinContainer, Coin_Server) are from memory of the game and can
+--   Knife hitbox : while you hold the Knife, its Handle is scaled to a cube of HitboxSize studs (Massless, no
+--                  collision) so stabs connect from further away. Original size is restored on unequip / off.
+--   Trap ESP     : highlights the Murderer's traps lying on the map.
+--   Safe farm    : AutoCoins skips coins that sit close to the Murderer.
+-- Instance names (Knife, Gun, GunDrop, CoinContainer, Coin_Server, Trap) are from memory of the game and can
 -- change in an update: if something stops working, check the names in the Explorer and edit the constants.
 local import = ...
 
@@ -32,7 +36,10 @@ local VirtualUser = game:GetService("VirtualUser")
 local KNIFE, GUN = "Knife", "Gun"
 local GUN_DROP = "GunDrop"
 local COIN_CONTAINER, COIN = "CoinContainer", "Coin_Server"
-local MAX_COIN_HL = 30 -- Highlight instances are capped by the engine (31 at a time), keep some spare for players
+local TRAP = "Trap"
+-- Highlight instances are capped by the engine (31 at a time): ~12 players + gun + traps + coins must fit
+local MAX_COIN_HL = 14
+local MAX_TRAP_HL = 4
 
 local COLORS = {
 	Murderer = Color3.fromRGB(255, 60, 60),
@@ -40,6 +47,7 @@ local COLORS = {
 	Innocent = Color3.fromRGB(90, 220, 120),
 	Gun = Color3.fromRGB(255, 210, 60),
 	Coin = Color3.fromRGB(255, 200, 40),
+	Trap = Color3.fromRGB(255, 120, 40),
 }
 
 local hasDrawing = pcall(function() return Drawing.new end) and Drawing ~= nil
@@ -76,12 +84,14 @@ function MM2.new()
 	self.Player = Players.LocalPlayer
 	self.Settings = {
 		RoleESP = false, Innocents = false, Tags = true,
-		Tracers = false,
+		Tracers = false, TrapESP = false,
 		Proximity = false, ProximityDistance = 35,          -- studs
 		GunESP = false, Alerts = true, ReturnAfterGun = true,
 		AutoGrabGun = false,
 		CoinESP = false,
 		AutoCoins = false, CoinDelay = 700,                 -- ms between coins
+		SafeFarm = false, SafeDistance = 40,                -- AutoCoins skips coins this close to the Murderer
+		Hitbox = false, HitboxSize = 12, HitboxShow = false, -- Knife handle cube (studs); Show = visible instead of invisible
 		CoinMode = "Teleport",                              -- "Teleport" | "Walk"
 		NoShootDelay = false,                               -- see _syncUtil; client-side only
 		NoDelay = false,                                    -- no wait between coins + instant prompts
@@ -95,6 +105,8 @@ function MM2.new()
 	self._chars = setmetatable({}, { __mode = "k" })   -- last character seen per player (a new one clears the role)
 	self._hl = {}                                      -- [player] = { Highlight, Billboard, Label }
 	self._coinHl = {}                                  -- [coin part] = Highlight
+	self._trapHl = {}                                  -- [trap] = Highlight
+	self._hb = {}                                      -- [knife Handle] = original properties (Hitbox)
 	self._tracers = {}                                 -- [player] = Drawing line
 	self._visited = setmetatable({}, { __mode = "k" }) -- coins already tried
 	self._proxT = 0
@@ -111,21 +123,21 @@ end
 
 local UTIL_KEYS = {
 	NoShootDelay = true, NoDelay = true, SpeedOn = true, JumpOn = true, Noclip = true, InfJump = true, AntiAFK = true,
-	Speed = true, Jump = true,
+	Speed = true, Jump = true, Hitbox = true, HitboxSize = true, HitboxShow = true,
 }
 
 function MM2:Set(key, value)
 	self.Settings[key] = value
 	if UTIL_KEYS[key] then self:_syncUtil() end
 	if key == "RoleESP" or key == "GunESP" or key == "AutoCoins" or key == "CoinESP"
-		or key == "Tracers" or key == "Proximity" or key == "AutoGrabGun" then
+		or key == "Tracers" or key == "Proximity" or key == "AutoGrabGun" or key == "TrapESP" then
 		self:_sync()
 	end
 end
 
 function MM2:_sync()
 	local s = self.Settings
-	local need = s.RoleESP or s.GunESP or s.CoinESP or s.Proximity or s.AutoGrabGun
+	local need = s.RoleESP or s.GunESP or s.CoinESP or s.Proximity or s.AutoGrabGun or s.TrapESP
 	if need and not self._beatConn then
 		if not self._folder then
 			self._folder = Instance.new("Folder")
@@ -176,6 +188,10 @@ function MM2:_clearVisuals()
 	for c, hl in self._coinHl do
 		hl:Destroy()
 		self._coinHl[c] = nil
+	end
+	for t, hl in self._trapHl do
+		hl:Destroy()
+		self._trapHl[t] = nil
 	end
 	if self._gunHl then self._gunHl:Destroy(); self._gunHl = nil end
 	self._gun = nil
@@ -352,6 +368,31 @@ function MM2:_updateGunVisual()
 	end
 end
 
+-- TRAP ESP -----------------------------------------------------------------------------
+function MM2:_updateTrapVisuals()
+	if not (self.Settings.TrapESP and self._folder) then
+		for t, hl in self._trapHl do hl:Destroy(); self._trapHl[t] = nil end
+		return
+	end
+	local count = 0
+	for t, hl in self._trapHl do
+		if t.Parent then count += 1 else hl:Destroy(); self._trapHl[t] = nil end
+	end
+	for _, c in Workspace:GetChildren() do
+		if count >= MAX_TRAP_HL then break end
+		if c.Name == TRAP and not self._trapHl[c] and (c:IsA("BasePart") or c:IsA("Model")) then
+			local hl = Instance.new("Highlight")
+			hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+			hl.FillColor, hl.OutlineColor = COLORS.Trap, Color3.new(1, 1, 1)
+			hl.FillTransparency = 0.35
+			hl.Adornee = c
+			hl.Parent = self._folder
+			self._trapHl[c] = hl
+			count += 1
+		end
+	end
+end
+
 function MM2:HasDrawing() return hasDrawing end
 
 function MM2:HasGun() return self._gun ~= nil and self._gun.Parent ~= nil end
@@ -393,9 +434,18 @@ end
 function MM2:_nearestCoin(from)
 	local container = self:_container()
 	if not container then return nil end
+	-- Safe Farm: coins close to the Murderer are left for later
+	local avoid
+	if self.Settings.SafeFarm and self.Roles[self.Player] ~= "Murderer" then
+		local m = self:GetByRole("Murderer")
+		local r = m and m.Character and m.Character:FindFirstChild("HumanoidRootPart")
+		avoid = r and r.Position
+	end
+	local safeD = self.Settings.SafeDistance
 	local best, bestD
 	for _, c in container:GetDescendants() do
-		if c.Name == COIN and c:IsA("BasePart") and not self._visited[c] then
+		if c.Name == COIN and c:IsA("BasePart") and not self._visited[c]
+			and not (avoid and (c.Position - avoid).Magnitude < safeD) then
 			local d = (c.Position - from).Magnitude
 			if not bestD or d < bestD then best, bestD = c, d end
 		end
@@ -547,6 +597,45 @@ function MM2:_restorePrompts()
 	end
 end
 
+-- KNIFE HITBOX ---------------------------------------------------------------------------
+-- Runs every Stepped while Hitbox is on. Only the Handle of the Knife you are holding is touched.
+-- The server still decides whether a stab counts: if it checks distance itself, a bigger Handle will not help.
+-- Your character owns the Handle, so size / transparency replicate: keep Show off (invisible) to look normal.
+function MM2:_restoreHitbox()
+	for handle, rec in self._hb do
+		if handle.Parent then
+			handle.Size = rec.Size
+			handle.Massless = rec.Massless
+			handle.CanCollide = rec.CanCollide
+			handle.Transparency = rec.Transparency
+		end
+		self._hb[handle] = nil
+	end
+end
+
+function MM2:_applyHitbox()
+	local char = self.Player.Character
+	local tool = char and char:FindFirstChild(KNIFE)
+	local handle = tool and tool:IsA("Tool") and tool:FindFirstChild("Handle")
+	if not (handle and handle:IsA("BasePart")) then
+		if next(self._hb) then self:_restoreHitbox() end -- knife unequipped
+		return
+	end
+	local s = self.Settings
+	if not self._hb[handle] then
+		self._hb[handle] = {
+			Size = handle.Size, Massless = handle.Massless,
+			CanCollide = handle.CanCollide, Transparency = handle.Transparency,
+		}
+	end
+	local size = Vector3.new(s.HitboxSize, s.HitboxSize, s.HitboxSize)
+	if handle.Size ~= size then handle.Size = size end
+	if not handle.Massless then handle.Massless = true end
+	if handle.CanCollide then handle.CanCollide = false end
+	local tr = s.HitboxShow and 0.7 or 1
+	if handle.Transparency ~= tr then handle.Transparency = tr end
+end
+
 function MM2:_syncUtil()
 	local s = self.Settings
 
@@ -607,6 +696,14 @@ function MM2:_syncUtil()
 		self:_unconn("Move")
 	end
 
+	-- knife hitbox
+	if s.Hitbox then
+		self:_conn("Hitbox", RunService.Stepped, function() self:_applyHitbox() end)
+	elseif self._conns.Hitbox or next(self._hb) then
+		self:_unconn("Hitbox")
+		self:_restoreHitbox()
+	end
+
 	-- noclip
 	if s.Noclip then
 		self:_conn("Noclip", RunService.Stepped, function()
@@ -663,6 +760,7 @@ function MM2:_beat(dt)
 		self:_scanGun()
 		local hrp = myRoot(self)
 		self:_updateCoinVisuals(hrp and hrp.Position)
+		self:_updateTrapVisuals()
 	end
 	self:_updateGunVisual()
 end
@@ -688,12 +786,417 @@ function MM2:Destroy()
 	if self._beatConn then self._beatConn:Disconnect(); self._beatConn = nil end
 	if self._tracerConn then self._tracerConn:Disconnect(); self._tracerConn = nil end
 	for name in self._conns do self:_unconn(name) end
+	self:_restoreHitbox()
 	self:_restorePrompts()
 	self:_clearTracers()
 	self:_clearVisuals()
 end
 
 return MM2
+end)(import)
+
+-- ======== NDS (merged) ========
+local NDS = (function(...)
+-- modules/NDS.lua
+-- Natural Disaster Survival helpers. Knows nothing about the GUI. Client-side only.
+--   Disaster detect : reads the current disaster from Values / Attributes, falling back to the on-screen
+--                     text (PlayerGui labels). Fires OnDisaster(name | nil) when it changes.
+--   Auto High Ground: on Flood / Tsunami, teleports once to the highest standable part near you.
+--   Go High         : manual version of Auto High Ground (any time).
+--   Water Walk      : a local, invisible pad under your feet whenever the ground below you is water.
+--   No Fall Damage  : softens the landing speed just before you touch the ground.
+--   Hazard ESP      : highlights tornadoes / meteors / fireballs / lava while a disaster is running.
+--   Safe spot       : save a position, jump back to it later.
+-- Everything is gated by Settings.Enabled, and the App only lets you enable it inside NDS.
+-- The disaster list, the hazard names and the PlaceId are from memory: if detection misses, set Debug = true
+-- and compare the printed source with what the game really shows, then hard-code the path in _readDisaster.
+local import = ...
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local CoreGui = game:GetService("CoreGui")
+
+local POLL = 0.5           -- seconds between disaster checks
+local CLEAR_AFTER = 4      -- consecutive empty polls before a disaster counts as over
+local FALL_TRIGGER = -35   -- studs/s downward speed that arms the fall check
+local FALL_SAFE = -22      -- speed you are slowed to near the ground
+local FALL_RAY = 14        -- studs below you that count as "near the ground"
+local WATER_RAY = 12       -- studs below you that are checked for water
+local PAD_SIZE = 14        -- width of the water pad
+local MAX_PART = 2000      -- ignore parts bigger than this (baseplates, oceans)
+local HIGH_RADIUS = 600    -- only parts this close (horizontally) count for "highest spot"
+local HIGH_CACHE = 45      -- seconds a found high spot is reused
+local MAX_HAZARD_HL = 6    -- Highlight instances are capped by the engine; keep it small
+local YIELD_EVERY = 400
+local HAZARDS = { "tornado", "meteor", "fireball", "lava", "lightning", "hail" } -- name fragments (lowercase)
+
+local NDS = {}
+NDS.__index = NDS
+
+NDS.Disasters = {
+	"Tornado", "Flood", "Tsunami", "Earthquake", "Fire", "Meteor Shower", "Volcanic Eruption",
+	"Blizzard", "Sandstorm", "Acid Rain", "Thunderstorm", "Deadly Virus", "Wildfire",
+}
+-- disasters where height is the answer
+NDS.HighGround = { Flood = true, Tsunami = true }
+
+local function guiParent()
+	local ok, ui = pcall(function() return gethui and gethui() end)
+	if ok and ui then return ui end
+	return CoreGui
+end
+
+local function matchName(text)
+	if type(text) ~= "string" or text == "" then return nil end
+	text = text:lower()
+	for _, name in NDS.Disasters do
+		if text:find("%f[%a]" .. name:lower() .. "%f[%A]") then return name end
+	end
+	return nil
+end
+
+local function hazardName(name)
+	name = name:lower()
+	for _, frag in HAZARDS do
+		if name:find(frag, 1, true) then return true end
+	end
+	return false
+end
+
+local function isWaterName(inst)
+	local n = inst.Name:lower()
+	return n:find("water", 1, true) ~= nil or n:find("flood", 1, true) ~= nil
+end
+
+local function isCharacterPart(inst)
+	local model = inst:FindFirstAncestorOfClass("Model")
+	return model ~= nil and Players:GetPlayerFromCharacter(model) ~= nil
+end
+
+local function myRoot(self)
+	local char = self.Player.Character
+	return char and char:FindFirstChild("HumanoidRootPart")
+end
+
+function NDS.new()
+	local self = setmetatable({}, NDS)
+	self.Player = Players.LocalPlayer
+	self.Settings = {
+		Enabled = false, Alerts = true,
+		AutoHigh = true, NoFallDamage = true, WaterWalk = true, HazardESP = true,
+		Debug = false,
+	}
+	self.Active = false     -- set by the App: true only inside NDS
+	self.Current = nil      -- name of the running disaster
+	self.Source = "none"    -- where the name was read from (for Debug)
+	self.Spot = nil         -- saved CFrame, see SetSpot
+	self.OnDisaster = nil   -- callback(name | nil)
+	self.OnHigh = nil       -- callback(position)  (a high spot was found)
+	self.Teleport = nil     -- function(cf) -> bool (use your own teleport + guard exemption)
+	self._miss, self._acc = 0, 0
+	self._high, self._highAt, self._finding, self._sentHigh = nil, 0, false, false
+	self._conn = nil
+	self._pad, self._folder = nil, nil
+	self._hz = {}           -- [hazard instance] = Highlight
+	self._rayParams = RaycastParams.new()
+	self._rayParams.FilterType = Enum.RaycastFilterType.Exclude
+	self._waterParams = RaycastParams.new()
+	self._waterParams.FilterType = Enum.RaycastFilterType.Exclude
+	self._waterParams.IgnoreWater = false -- terrain water has to be hit to be seen
+	return self
+end
+
+function NDS:_log(...)
+	if self.Settings.Debug then print("[NDS]", ...) end
+end
+
+function NDS:Set(key, value)
+	self.Settings[key] = value
+	if key == "Enabled" then
+		self:_sync()
+	elseif key == "WaterWalk" and not value then
+		self:_dropPad()
+	elseif key == "HazardESP" and not value then
+		self:_clearHazards()
+	end
+end
+
+function NDS:SetEnabled(on)
+	self:Set("Enabled", on)
+	if not on then self:_reset() end
+end
+
+function NDS:_reset()
+	self.Current, self.Source = nil, "none"
+	self._miss, self._high, self._sentHigh = 0, nil, false
+	self:_dropPad()
+	self:_clearHazards()
+end
+
+function NDS:_sync()
+	if self.Settings.Enabled and not self._conn then
+		self._conn = RunService.Heartbeat:Connect(function(dt) self:_beat(dt) end)
+	elseif not self.Settings.Enabled and self._conn then
+		self._conn:Disconnect()
+		self._conn = nil
+	end
+end
+
+-- DISASTER DETECTION ---------------------------------------------------------------
+-- 1) Values / Attributes named like "disaster" on Workspace / ReplicatedStorage
+-- 2) visible text on screen that contains a known disaster name
+function NDS:_readDisaster()
+	for _, root in { Workspace, ReplicatedStorage } do
+		for k, v in root:GetAttributes() do
+			if type(v) == "string" and k:lower():find("disaster", 1, true) then
+				local n = matchName(v)
+				if n then return n, "attribute " .. root.Name .. "." .. k end
+			end
+		end
+		for _, child in root:GetChildren() do
+			if child:IsA("StringValue") and child.Name:lower():find("disaster", 1, true) then
+				local n = matchName(child.Value)
+				if n then return n, "value " .. child:GetFullName() end
+			end
+		end
+	end
+
+	local gui = self.Player and self.Player:FindFirstChildOfClass("PlayerGui")
+	if gui then
+		for _, d in gui:GetDescendants() do
+			if d:IsA("TextLabel") and d.Visible and d.Text ~= "" and d.TextTransparency < 1 then
+				local n = matchName(d.Text)
+				if n then return n, "gui " .. d:GetFullName() end
+			end
+		end
+	end
+	return nil, "none"
+end
+
+function NDS:_poll()
+	local name, source = self:_readDisaster()
+	if name then
+		self._miss = 0
+		if name ~= self.Current then
+			self.Current, self.Source = name, source
+			self._high, self._sentHigh = nil, false
+			self:_log("disaster:", name, "via", source)
+			if self.OnDisaster then task.spawn(self.OnDisaster, name) end
+		end
+	else
+		self._miss += 1
+		if self.Current and self._miss >= CLEAR_AFTER then
+			self:_log("disaster over:", self.Current)
+			self:_reset()
+			if self.OnDisaster then task.spawn(self.OnDisaster, nil) end
+		end
+	end
+
+	local s = self.Settings
+	if s.AutoHigh and self.Current and NDS.HighGround[self.Current] and not self._sentHigh then
+		self._sentHigh = true
+		self:GoHigh()
+	end
+	self:_updateHazards()
+end
+
+-- HIGH GROUND ---------------------------------------------------------------------------
+-- highest standable, anchored, collidable part near you that is not water / terrain / a character
+function NDS:_findHigh()
+	local me = myRoot(self)
+	if not me then return nil end
+	local origin = me.Position
+	local best, bestTop
+	local n = 0
+	for _, d in Workspace:GetDescendants() do
+		if d:IsA("BasePart") and not d:IsA("Terrain") and d.Anchored and d.CanCollide
+			and d.Transparency < 1 and d.Size.X >= 4 and d.Size.Z >= 4
+			and d.Size.X < MAX_PART and d.Size.Z < MAX_PART then
+			local dx, dz = d.Position.X - origin.X, d.Position.Z - origin.Z
+			if dx * dx + dz * dz <= HIGH_RADIUS * HIGH_RADIUS then
+				local lname = d.Name:lower()
+				if not (lname:find("water", 1, true) or lname:find("flood", 1, true) or lname:find("lava", 1, true))
+					and not isCharacterPart(d) then
+					local top = d.Position.Y + d.Size.Y / 2
+					if not bestTop or top > bestTop then best, bestTop = d, top end
+				end
+			end
+		end
+		n += 1
+		if n % YIELD_EVERY == 0 then task.wait() end
+	end
+	if not best then return nil end
+	return Vector3.new(best.Position.X, bestTop + 4, best.Position.Z)
+end
+
+function NDS:_goto(cf)
+	if self.Teleport then return self.Teleport(cf) end
+	local hrp = myRoot(self)
+	if not hrp then return false end
+	hrp.CFrame = cf
+	return true
+end
+
+-- returns ok, err. Runs in the background (the scan yields), so ok = "started".
+function NDS:GoHigh()
+	if not self.Active then return false, "Not in Natural Disaster Survival" end
+	if self._finding then return false, "Already searching" end
+	if not myRoot(self) then return false, "No character" end
+	self._finding = true
+	task.spawn(function()
+		local pos = self._high
+		if not (pos and os.clock() - self._highAt < HIGH_CACHE) then pos = self:_findHigh() end
+		self._finding = false
+		if not pos then
+			self:_log("no high spot found")
+			return
+		end
+		self._high, self._highAt = pos, os.clock()
+		self:_log("high spot", pos)
+		if self.OnHigh then task.spawn(self.OnHigh, pos) end
+		self:_goto(CFrame.new(pos))
+	end)
+	return true
+end
+
+-- SAFE SPOT -----------------------------------------------------------------------------
+function NDS:SetSpot()
+	local hrp = myRoot(self)
+	if not hrp then return false, "No character" end
+	self.Spot = hrp.CFrame
+	return true
+end
+
+function NDS:GoSpot()
+	if not self.Spot then return false, "No spot saved" end
+	if not myRoot(self) then return false, "No character" end
+	return self:_goto(self.Spot)
+end
+
+-- NO FALL DAMAGE ---------------------------------------------------------------------
+function NDS:_softLand()
+	local char = self.Player.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	if not (hum and root) or hum.Health <= 0 then return end
+	local v = root.AssemblyLinearVelocity
+	if v.Y > FALL_TRIGGER then return end
+	self._rayParams.FilterDescendantsInstances = { char }
+	local hit = Workspace:Raycast(root.Position, Vector3.new(0, -FALL_RAY, 0), self._rayParams)
+	if hit then
+		root.AssemblyLinearVelocity = Vector3.new(v.X, FALL_SAFE, v.Z)
+	end
+end
+
+-- WATER WALK ----------------------------------------------------------------------------
+-- The pad only exists on this client (your own character is simulated here, so you do stand on it).
+function NDS:_dropPad()
+	if self._pad then
+		self._pad:Destroy()
+		self._pad = nil
+	end
+end
+
+function NDS:_waterWalk()
+	local char = self.Player.Character
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if not (root and hum) or hum.Health <= 0 then
+		self:_dropPad()
+		return
+	end
+	local filter = { char }
+	if self._pad then table.insert(filter, self._pad) end
+	self._waterParams.FilterDescendantsInstances = filter
+	local hit = Workspace:Raycast(root.Position, Vector3.new(0, -WATER_RAY, 0), self._waterParams)
+	if not (hit and (hit.Material == Enum.Material.Water or isWaterName(hit.Instance))) then
+		self:_dropPad()
+		return
+	end
+	if not self._pad then
+		local pad = Instance.new("Part")
+		pad.Name = "PM_WaterPad"
+		pad.Anchored, pad.CanCollide, pad.CanQuery, pad.CanTouch = true, true, false, false
+		pad.Transparency = 1
+		pad.Size = Vector3.new(PAD_SIZE, 1, PAD_SIZE)
+		pad.Parent = Workspace
+		self._pad = pad
+	end
+	self._pad.CFrame = CFrame.new(root.Position.X, hit.Position.Y - 0.5, root.Position.Z)
+end
+
+-- HAZARD ESP ----------------------------------------------------------------------------
+function NDS:_clearHazards()
+	for inst, hl in self._hz do
+		hl:Destroy()
+		self._hz[inst] = nil
+	end
+	if self._folder then
+		self._folder:Destroy()
+		self._folder = nil
+	end
+end
+
+function NDS:_updateHazards()
+	if not (self.Settings.HazardESP and self.Current) then
+		if next(self._hz) then self:_clearHazards() end
+		return
+	end
+	if not self._folder then
+		self._folder = Instance.new("Folder")
+		self._folder.Name = "PlayerMenuNDS"
+		self._folder.Parent = guiParent()
+	end
+	local count = 0
+	for inst, hl in self._hz do
+		if inst.Parent then
+			count += 1
+		else
+			hl:Destroy()
+			self._hz[inst] = nil
+		end
+	end
+	for _, c in Workspace:GetChildren() do
+		if count >= MAX_HAZARD_HL then break end
+		if not self._hz[c] and (c:IsA("Model") or c:IsA("BasePart")) and not c:IsA("Terrain")
+			and hazardName(c.Name) and not (c:IsA("Model") and Players:GetPlayerFromCharacter(c)) then
+			local hl = Instance.new("Highlight")
+			hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+			hl.FillColor, hl.OutlineColor = Color3.fromRGB(255, 90, 40), Color3.new(1, 1, 1)
+			hl.FillTransparency = 0.5
+			hl.Adornee = c
+			hl.Parent = self._folder
+			self._hz[c] = hl
+			count += 1
+		end
+	end
+end
+
+-- LOOP ----------------------------------------------------------------------------------
+function NDS:_beat(dt)
+	if not self.Active then return end
+	local s = self.Settings
+	if s.NoFallDamage then self:_softLand() end
+	if s.WaterWalk then self:_waterWalk() end
+	self._acc += dt
+	if self._acc < POLL then return end
+	self._acc = 0
+	self:_poll()
+end
+
+function NDS:GetStatus()
+	return self.Current or "None"
+end
+
+function NDS:Destroy()
+	self.Settings.Enabled = false
+	self:_sync()
+	self:_reset()
+end
+
+return NDS
 end)(import)
 
 -- modules/Games.lua
@@ -706,6 +1209,8 @@ local Games = {}
 
 Games.List = {
 	{ Id = "MM2", Name = "Murder Mystery 2", PlaceIds = { 142823291 }, UniverseIds = { 66654135 }, NameHint = "murder mystery" },
+	-- NDS ids are from memory; the title match below covers a wrong one
+	{ Id = "NDS", Name = "Natural Disaster Survival", PlaceIds = { 189707 }, UniverseIds = { 65241 }, NameHint = "natural disaster survival" },
 }
 
 function Games.Detect()
@@ -723,6 +1228,13 @@ function Games.Detect()
 	return nil
 end
 
+-- true when the detected game is the one with this Id ("MM2" | "NDS")
+function Games.Is(id)
+	local g = Games.Detect()
+	return g ~= nil and g.Id == id
+end
+
 Games.MM2 = MM2 -- the Murder Mystery 2 helper class
+Games.NDS = NDS -- the Natural Disaster Survival helper class
 
 return Games

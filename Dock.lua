@@ -84,10 +84,12 @@ return function(GuiUI)
 		local hz = State.Skin.Horizontal == true
 		local S = Theme.Size
 		self.TabListLayout.FillDirection = hz and Enum.FillDirection.Horizontal or Enum.FillDirection.Vertical
-		self.TabList.CanvasSize = UDim2.new()
+		-- the canvas is as tall (top row) / as wide (side column) as the window, and only grows along the scroll axis,
+		-- so scale-sized buttons fill the strip completely
+		self.TabList.CanvasSize = hz and UDim2.fromScale(0, 1) or UDim2.fromScale(1, 0)
 		self.TabList.AutomaticCanvasSize = hz and Enum.AutomaticSize.X or Enum.AutomaticSize.Y
 		self.TabList.ScrollingDirection = hz and Enum.ScrollingDirection.X or Enum.ScrollingDirection.Y
-		self.TabList.ScrollBarThickness = 3 -- also on the top row, so you can see there is more to scroll to
+		self.TabList.ScrollBarThickness = 0 -- hidden: it covered the buttons (scroll with the wheel / drag)
 		local p = UDim.new(0, hz and 5 or 8)
 		local pad = self.TabListPad
 		pad.PaddingTop, pad.PaddingBottom, pad.PaddingLeft, pad.PaddingRight = p, p, UDim.new(0, 8), UDim.new(0, 8)
@@ -802,7 +804,7 @@ return function(GuiUI)
 				for _, tab in list do tab.Button.Holder.Size = UDim2.new(0, w, 1, 0) end
 			end
 			self.TabList.ScrollingDirection = Enum.ScrollingDirection.X
-			self.TabList.CanvasSize = UDim2.new()
+			self.TabList.CanvasSize = UDim2.fromScale(0, 1)
 			-- full-height buttons: keep the glyph inside the strip so nothing is clipped
 			local h = L.PanelPx.Y * rect.Y.Scale - (pad.PaddingTop.Offset + pad.PaddingBottom.Offset)
 			for _, tab in list do
