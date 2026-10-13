@@ -17,6 +17,7 @@ local Guard = import("Guard")
 local Vehicle = import("Vehicle")
 local Games = import("Games") -- Games.MM2 / Games.NDS are the per-game helpers
 local MM2, NDS = Games.MM2, Games.NDS
+local PlayerSelect = import("PlayerSelect") -- hover a player, click twice for the billboard menu
 
 local ui = GuiUI.new({
 	Title = "Player Menu",
@@ -44,8 +45,18 @@ local guard = Guard.new()
 
 -- wire the guard to your own tools
 visuals.FlaggedFn = function(p) return guard:IsFlagged(p) end
+visuals:Set("FlagColor", false) -- the Guard draws its own red outline on flagged players
 guard.IsExempt = function() return mods.Flying or mods.CamMode ~= "Off" or mods._glide ~= nil end
 guard.OnAlert = function(text) ui:Notify(text) end
+
+-- player select: Fling / Spectate / Teleport / Head Sit / Orbit / Shadow from a billboard menu
+local picker = PlayerSelect.new(mods)
+picker.Notify = function(text) ui:Notify(text) end
+picker.OnMove = function() guard:Allow(2) end
+do -- your own Fling / Orbit moves must not trip the guard's checks
+	local baseExempt = guard.IsExempt
+	guard.IsExempt = function() return baseExempt() or picker:IsBusy() end
+end
 
 -- your own teleports (slots, click, player, undo) must not trip Block Forced TP
 local baseTeleport = mods.TeleportTo
@@ -256,6 +267,22 @@ speedFxCell:AddLabel("Shift: sprint, fly boost, free cam")
 toggle(speedFxCell2, "FOV Punch", "fxFov", true, function(on) fx:Set("FovPunch", on) end, true)
 toggle(speedFxCell2, "Speed Lines", "fxLines", true, function(on) fx:Set("Lines", on) end, true)
 toggle(speedFxCell2, "Trail", "fxTrail", true, function(on) fx:Set("Trail", on) end, true)
+
+-- SELECT: hover a player, click them twice for the billboard menu ------------------------
+local selCell, selTuneCell = playerTab:AddQuad("Select", "Select", { "Player", "Tuning" })
+
+toggle(selCell, "Click Menu", "selectOn", false, function(on)
+	picker:SetEnabled(on)
+	ui:Notify("Player select " .. onOff(on))
+end, true)
+toggle(selCell, "Hover Outline", "selectHover", true, function(on) picker:Set("Hover", on) end, true)
+selCell:AddLabel("Hover = outline, click twice = menu")
+selCell:AddButton("Stop Actions", function() picker:StopActions() end)
+
+slider(selTuneCell, "Double-Click (ms)", "selWindow", 250, 1200, 600, function(v) picker:Set("ClickWindow", v / 1000) end, true)
+slider(selTuneCell, "Fling Time (s)", "selFling", 1, 5, 2.5, function(v) picker:Set("FlingTime", v) end, true)
+slider(selTuneCell, "Orbit Radius", "selOrbit", 4, 20, 8, function(v) picker:Set("OrbitRadius", v) end, true)
+slider(selTuneCell, "Orbit Speed", "selOrbitSpeed", 1, 10, 3, function(v) picker:Set("OrbitSpeed", v) end, true)
 
 -- WORLD: Teleport + World + Audio in one tab -----------------------------------
 local worldTab = ui:AddTab("World", "World", "🌍")
@@ -757,7 +784,7 @@ local function refreshFlags()
 	flaggedLabel.Text = "Flagged: " .. #list
 	local last = list[#list]
 	local rec = last and guard:GetRecord(last)
-	lastLabel.Text = rec and ("Last: " .. last.Name .. " (" .. rec.Last .. ")") or "Last: none"
+	lastLabel.Text = rec and ("Last: " .. last.Name .. " (" .. guard:Describe(last) .. ")") or "Last: none"
 end
 
 toggle(watchCell, "Watch Players", "guardMonitor", false, function(on)
@@ -765,7 +792,12 @@ toggle(watchCell, "Watch Players", "guardMonitor", false, function(on)
 	ui:Notify("Guard watch " .. onOff(on))
 end, true)
 toggle(watchCell, "Alerts", "guardAlerts", true, function(on) guard:Set("Alerts", on) end, true)
-toggle(watchCell, "Highlight Flagged", "guardColor", true, function(on) visuals:Set("FlagColor", on) end, true)
+toggle(watchCell, "Highlight Flagged", "guardColor", true, function(on) guard:Set("Highlight", on) end, true)
+toggle(watchCell, "Smart Filter", "guardSmart", true, function(on) guard:Set("SmartFilter", on) end, true)
+watchCell:AddLabel("Pauses on lag, spares fling victims")
+toggle(watchCell, "Ignore Friends", "guardFriends", true, function(on) guard:Set("IgnoreFriends", on) end, true)
+toggle(watchCell, "Proximity Alert", "guardProx", true, function(on) guard:Set("ProximityAlert", on) end, true)
+slider(watchCell, "Flag Expires (s, 0=never)", "guardExpire", 0, 600, 120, function(v) guard:Set("AutoUnflag", v) end, true)
 slider(watchCell, "Strikes To Flag", "guardStrikes", 2, 10, 4, function(v) guard:Set("StrikesToFlag", v) end, true)
 
 toggle(guardChecks, "Speed", "guardSpeed", true, function(on) guard:Set("Speed", on) end, true)
@@ -773,6 +805,7 @@ toggle(guardChecks, "Fly", "guardFly", true, function(on) guard:Set("Fly", on) e
 toggle(guardChecks, "Teleport", "guardTeleport", true, function(on) guard:Set("Teleport", on) end, true)
 toggle(guardChecks, "Fling", "guardFling", true, function(on) guard:Set("Fling", on) end, true)
 toggle(guardChecks, "Spin", "guardSpin", true, function(on) guard:Set("Spin", on) end, true)
+toggle(guardChecks, "Noclip (experimental)", "guardNoclip", false, function(on) guard:Set("Noclip", on) end, true)
 slider(guardChecks, "Speed Tolerance %", "guardTolerance", 120, 400, 200, function(v) guard:Set("SpeedTolerance", v) end, true)
 slider(guardChecks, "Spin Min rad/s", "guardSpinMin", 4, 40, 10, function(v) guard:Set("SpinMin", v) end, true)
 
@@ -782,6 +815,9 @@ toggle(shieldCell, "No Player Collision", "guardNoCollide", false, function(on)
 end, true)
 toggle(shieldCell, "Anti-Fling", "guardAntiFling", false, function(on) guard:Set("AntiFling", on) end, true)
 shieldCell:AddLabel("No pushing, spin or launch")
+toggle(shieldCell, "Isolate Flagged", "guardIsolate", false, function(on) guard:Set("IsolateFlagged", on) end, true)
+shieldCell:AddLabel("No collision with flagged only")
+toggle(shieldCell, "Anti-Attach", "guardAntiAttach", false, function(on) guard:Set("AntiAttach", on) end, true)
 toggle(shieldCell, "Anti-Void", "guardAntiVoid", false, function(on) guard:Set("AntiVoid", on) end, true)
 toggle(shieldCell, "Block Forced TP", "guardAntiSnap", false, function(on) guard:Set("AntiSnap", on) end, true)
 slider(shieldCell, "Max Self Speed", "guardMaxSpeed", 100, 600, 250, function(v) guard:Set("MaxSelfSpeed", v) end, true)
@@ -792,6 +828,16 @@ flagCell:AddButton("Spectate Last", function()
 	local list = guard:GetFlagged()
 	local p = list[#list]
 	if p and mods:Spectate(p) then ui:Notify("Spectating " .. p.DisplayName) else ui:Notify("Nobody flagged") end
+end)
+flagCell:AddButton("Unflag Last (Trust)", function()
+	local list = guard:GetFlagged()
+	local p = list[#list]
+	if p then
+		guard:Trust(p)
+		ui:Notify(p.DisplayName .. " trusted, flag removed")
+	else
+		ui:Notify("Nobody flagged")
+	end
 end)
 flagCell:AddButton("Clear Flags", function()
 	guard:ClearFlags()
@@ -1148,6 +1194,7 @@ return {
 		pcall(function() mm2:Destroy() end)
 		pcall(function() nds:Destroy() end)
 		pcall(function() audio:Destroy() end)
+		pcall(function() picker:Destroy() end)
 		pcall(function() gfx:Destroy() end)
 		pcall(function() fx:Destroy() end)
 		mods:Destroy()
