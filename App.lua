@@ -26,7 +26,8 @@ local ui = GuiUI.new({
 	Style = "GNOME", -- dark GNOME is the only style
 	DockSide = "Left", -- Left | Right | Top : which screen edge the bar is glued to
 	BarSize = 56, -- bar thickness in px (36 - 100)
-	UserScale = 0.6, -- starts at 60% (the slider in Settings > Look goes 30% - 160%)
+	UserScale = 0.8, -- starts at 80% (the slider in Settings > Look goes 30% - 160%)
+	TabDisplay = "Text", -- Icons | Text | Both : sidebar tab buttons show plain text
 	AutoHide = true, -- shrink into the edge widget when not used
 	IdleTime = 8, -- seconds of inactivity before that happens
 	WidgetLength = 84, -- length of the edge widget (px)
@@ -979,15 +980,17 @@ local scheme = "Default"
 dropdown(lookMenuCell, "Color Scheme", "menuScheme", ui:GetThemeNames(), "Default", function(name)
 	scheme = name
 	ui:SetTheme(name)
+	picker:Retheme()
 	-- a scheme brings its own accent
 	registry.menuTint.value = "Default"
 	registry.menuTint.control.Set("Default")
 end, true)
 dropdown(lookMenuCell, "Accent", "menuTint", ACCENT_NAMES, "Default", function(name)
 	if name == "Default" then ui:SetTheme(scheme) else ui:SetAccent(ACCENTS[name]) end
+	picker:Retheme()
 end, true)
-slider(lookMenuCell, "UI Scale %", "menuScale", 30, 160, 60, function(v) ui:SetUserScale(v / 100) end, true)
-slider(lookMenuCell, "Transparency %", "menuTransp", 0, 70, 0, function(v) ui:SetPanelTransparency(v / 100) end, true)
+slider(lookMenuCell, "UI Scale %", "menuScale", 30, 160, 80, function(v) ui:SetUserScale(v / 100) end, true)
+slider(lookMenuCell, "Transparency %", "menuTransp", 0, 70, 0, function(v) ui:SetPanelTransparency(v / 100); picker:Retheme() end, true)
 
 dropdown(dockCell, "Dock Side", "menuDock", ui:GetDockSides(), "Left", function(side) ui:SetDockSide(side) end, true)
 toggle(dockCell, "Auto-hide", "menuAutoHide", true, function(on) ui:SetAutoHide(on) end, true)
@@ -998,7 +1001,7 @@ dockCell:AddButton("Reset Position", function() ui:ResetPosition() end)
 local confirmReset = true
 local comfortTabs, comfortSpace, comfortToast, comfortFloat = settings:AddQuad("Comfort", "Comfort", { "Tabs", "Spacing", "Alerts", "Detach" })
 
-dropdown(comfortTabs, "Tab Labels", "tabDisplay", ui:GetTabDisplayModes(), "Icons", function(v) ui:SetTabDisplay(v) end, true)
+dropdown(comfortTabs, "Tab Labels", "tabDisplay", ui:GetTabDisplayModes(), "Text", function(v) ui:SetTabDisplay(v) end, true)
 comfortTabs:AddLabel("Icons, Text or Both")
 toggle(comfortTabs, "Confirm Reset", "confirmReset", true, function(on) confirmReset = on end, true)
 

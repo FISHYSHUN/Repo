@@ -31,12 +31,12 @@ local BACK = Enum.EasingStyle.Back
 local QUAD = Enum.EasingStyle.Quad
 
 local ACTIONS = {
-	{ Id = "Fling", Icon = "🌪", Label = "Fling", Stop = "Stop Fling" },
-	{ Id = "Spectate", Icon = "👁", Label = "Spectate", Stop = "Stop Spectating" },
-	{ Id = "Teleport", Icon = "📍", Label = "Teleport To", Stop = "Teleport To" },
-	{ Id = "Headsit", Icon = "🪑", Label = "Head Sit", Stop = "Stop Head Sit" },
-	{ Id = "Orbit", Icon = "🌀", Label = "Orbit", Stop = "Stop Orbit" },
-	{ Id = "Shadow", Icon = "👣", Label = "Shadow", Stop = "Stop Shadow" },
+	{ Id = "Fling", Label = "Fling", Stop = "Stop Fling" },
+	{ Id = "Spectate", Label = "Spectate", Stop = "Stop Spectating" },
+	{ Id = "Teleport", Label = "Teleport To", Stop = "Teleport To" },
+	{ Id = "Headsit", Label = "Head Sit", Stop = "Stop Head Sit" },
+	{ Id = "Orbit", Label = "Orbit", Stop = "Stop Orbit" },
+	{ Id = "Shadow", Label = "Shadow", Stop = "Stop Shadow" },
 }
 
 -- helpers ------------------------------------------------------------------------------------
@@ -64,7 +64,11 @@ local function palette()
 		Border = Theme.Border or Color3.fromRGB(80, 80, 90),
 		Close = Theme.Close or Color3.fromRGB(255, 80, 80),
 		Font = Theme.Font or Enum.Font.GothamBold,
-		Radius = UDim.new(0, math.clamp(math.floor((Theme.Corner or 8) * 0.6), 4, 10)),
+		Edge = Theme.Edge or Theme.Border or Color3.fromRGB(88, 95, 102),
+		Shadow = Theme.WindowShadow or Color3.fromRGB(6, 6, 8),
+		Alpha = math.clamp(Theme.PanelTransparency or 0, 0, 0.7),
+		HeadRadius = UDim.new(0, math.floor((Theme.Corner or 8) * 0.8 + 0.5)),
+		Radius = UDim.new(0, math.floor((Theme.Corner or 8) * 0.7 + 0.5)),
 	}
 end
 
@@ -177,23 +181,23 @@ function PlayerSelect:_pick(point)
 end
 
 -- outlines -----------------------------------------------------------------------------------
-function PlayerSelect:_paintHover()
+function PlayerSelect:_paintHover(fast)
 	local hl, p = self._hoverHL, self._hoverP
 	local sel = self._popup and self._popup.Player
 	local char = p and p.Character
 	if char and p ~= sel then
 		local c = palette()
 		local armed = self._armed ~= nil and self._armed.Player == p
-		local col = armed and c.Accent or Color3.new(1, 1, 1)
+		local col = armed and c.Accent or c.Text
 		hl.Adornee = char
 		hl.FillColor, hl.OutlineColor = col, col
-		tween(hl, 0.15, { FillTransparency = armed and 0.6 or 0.85, OutlineTransparency = armed and 0 or 0.25 })
+		tween(hl, fast and 0.08 or 0.15, { FillTransparency = armed and 0.6 or 0.85, OutlineTransparency = armed and 0 or 0.25 })
 	else
 		tween(hl, 0.15, { FillTransparency = 1, OutlineTransparency = 1 })
 	end
 end
 
-function PlayerSelect:_paintSelected()
+function PlayerSelect:_paintSelected(fast)
 	local hl, popup = self._selHL, self._popup
 	local char = popup and popup.Player.Character
 	if char then
@@ -202,9 +206,9 @@ function PlayerSelect:_paintSelected()
 		hl.FillColor, hl.OutlineColor = c.Accent, c.Accent
 		tween(hl, 0.25, { FillTransparency = 0.7, OutlineTransparency = 0 })
 	else
-		tween(hl, 0.2, { FillTransparency = 1, OutlineTransparency = 1 })
+		tween(hl, fast and 0.08 or 0.2, { FillTransparency = 1, OutlineTransparency = 1 })
 	end
-	self:_paintHover()
+	self:_paintHover(fast)
 end
 
 function PlayerSelect:_setHover(p)
@@ -287,12 +291,12 @@ function PlayerSelect:Open(player)
 
 	-- header --------------------------------------------------------------------------------
 	local header = New("CanvasGroup", {
-		Name = "Header", BackgroundColor3 = c.Panel, BorderSizePixel = 0, GroupTransparency = 1,
+		Name = "Header", BackgroundColor3 = c.Panel, BackgroundTransparency = c.Alpha, BorderSizePixel = 0, GroupTransparency = 1,
 		AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.fromOffset(0, HEADER_H / 2),
 		Size = UDim2.new(1, 0, 0, HEADER_H),
 	}, panel)
-	New("UICorner", { CornerRadius = c.Radius }, header)
-	New("UIStroke", { Color = c.Border, Transparency = 0.35, Thickness = 1 }, header)
+	New("UICorner", { CornerRadius = c.HeadRadius }, header)
+	New("UIStroke", { Color = c.Edge, Transparency = 0.2, Thickness = 1 }, header)
 	local headScale = New("UIScale", { Scale = 0.6 }, header)
 	New("Frame", { -- accent bar along the bottom edge
 		Name = "Bar", BackgroundColor3 = c.Accent, BorderSizePixel = 0, AnchorPoint = Vector2.new(0, 1),
@@ -305,13 +309,13 @@ function PlayerSelect:Open(player)
 	}, header)
 	New("TextLabel", {
 		Name = "User", BackgroundTransparency = 1, Position = UDim2.fromOffset(12, 23), Size = UDim2.new(1, -50, 0, 16),
-		Text = "@" .. player.Name, TextColor3 = c.Text, TextTransparency = 0.45, Font = Enum.Font.Gotham, TextSize = 12,
+		Text = "@" .. player.Name, TextColor3 = c.Text, TextTransparency = 0.45, Font = c.Font, TextSize = 12,
 		TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
 	}, header)
 	local closeBtn = New("TextButton", {
 		Name = "Close", BackgroundTransparency = 1, AutoButtonColor = false, AnchorPoint = Vector2.new(1, 0.5),
 		Position = UDim2.new(1, -8, 0.5, -1), Size = UDim2.fromOffset(26, 26),
-		Text = "✕", TextColor3 = c.Text, TextTransparency = 0.3, Font = c.Font, TextSize = 15,
+		Text = "X", TextColor3 = c.Text, TextTransparency = 0.3, Font = c.Font, TextSize = 15,
 	}, header)
 	closeBtn.MouseEnter:Connect(function()
 		self._over += 1
@@ -330,29 +334,25 @@ function PlayerSelect:Open(player)
 		local rest = UDim2.fromOffset(0, centerY)
 
 		local row = New("CanvasGroup", {
-			Name = action.Id, BackgroundColor3 = c.Field, BorderSizePixel = 0, GroupTransparency = 1,
+			Name = action.Id, BackgroundColor3 = c.Field, BackgroundTransparency = c.Alpha, BorderSizePixel = 0, GroupTransparency = 1,
 			AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.fromOffset(-24, centerY), -- starts slid toward the head
 			Size = UDim2.new(1, 0, 0, ROW_H),
 		}, panel)
 		New("UICorner", { CornerRadius = c.Radius }, row)
-		New("UIStroke", { Color = c.Border, Transparency = 0.5, Thickness = 1 }, row)
+		New("UIStroke", { Color = c.Border, Transparency = 0.2, Thickness = 1 }, row)
 		local scale = New("UIScale", { Scale = 0.65 }, row)
 
-		local icon = New("TextLabel", {
-			BackgroundTransparency = 1, Position = UDim2.fromOffset(8, 0), Size = UDim2.new(0, 26, 1, 0),
-			Text = action.Icon, TextColor3 = c.Text, Font = Enum.Font.Gotham, TextSize = 17,
-		}, row)
 		local label = New("TextLabel", {
-			BackgroundTransparency = 1, Position = UDim2.fromOffset(38, 0), Size = UDim2.new(1, -46, 1, 0),
+			BackgroundTransparency = 1, Position = UDim2.fromOffset(10, 0), Size = UDim2.new(1, -20, 1, 0),
 			Text = action.Label, TextColor3 = c.Text, Font = c.Font, TextSize = 15,
-			TextXAlignment = Enum.TextXAlignment.Left,
+			TextXAlignment = Enum.TextXAlignment.Center, TextTruncate = Enum.TextTruncate.AtEnd,
 		}, row)
 		local button = New("TextButton", {
 			BackgroundTransparency = 1, AutoButtonColor = false, Text = "", Size = UDim2.fromScale(1, 1), ZIndex = 5,
 		}, row)
 
 		local entry = {
-			Action = action, Row = row, Scale = scale, Label = label, Icon = icon,
+			Action = action, Row = row, Scale = scale, Label = label,
 			Rest = rest, Color = c.Field, TextColor = c.Text, Hovering = false,
 		}
 		table.insert(popup.Rows, entry)
@@ -402,38 +402,42 @@ function PlayerSelect:Open(player)
 	end
 end
 
--- closes in reverse: the last button folds away first
+-- closes everything together and fast, so nothing lingers on screen
+local CLOSE_T = 0.12
 function PlayerSelect:Close(instant)
 	local popup = self._popup
 	if not popup then return end
 	self._popup = nil
 	self._over = 0
-	self:_paintSelected()
 
 	if instant then
 		popup.Gui:Destroy()
+		self:_paintSelected(true)
 		return
 	end
+	self:_paintSelected(true)
 
-	local n = #popup.Rows
-	for i = n, 1, -1 do
-		local entry = popup.Rows[i]
-		task.delay((n - i) * 0.03, function()
-			if not entry.Row.Parent then return end
-			tween(entry.Row, 0.16, { GroupTransparency = 1, Position = UDim2.fromOffset(-18, entry.Rest.Y.Offset) }, QUAD, Enum.EasingDirection.In)
-			tween(entry.Scale, 0.16, { Scale = 0.65 }, QUAD, Enum.EasingDirection.In)
-		end)
+	local function out(inst, props) tween(inst, CLOSE_T, props, QUAD, Enum.EasingDirection.In) end
+	for _, entry in popup.Rows do
+		out(entry.Row, { GroupTransparency = 1, Position = UDim2.fromOffset(-14, entry.Rest.Y.Offset) })
+		out(entry.Scale, { Scale = 0.8 })
 	end
-	task.delay(n * 0.03, function()
-		if not popup.Gui.Parent then return end
-		tween(popup.Header, 0.16, { GroupTransparency = 1 }, QUAD, Enum.EasingDirection.In)
-		tween(popup.HeadScale, 0.16, { Scale = 0.6 }, QUAD, Enum.EasingDirection.In)
-		tween(popup.Line, 0.16, { Size = UDim2.fromOffset(0, 2) }, QUAD, Enum.EasingDirection.In)
-		tween(popup.Dot, 0.16, { Size = UDim2.fromOffset(0, 0) }, QUAD, Enum.EasingDirection.In)
-	end)
-	task.delay(n * 0.03 + 0.3, function()
+	out(popup.Header, { GroupTransparency = 1 })
+	out(popup.HeadScale, { Scale = 0.8 })
+	out(popup.Line, { Size = UDim2.fromOffset(0, 2) })
+	out(popup.Dot, { Size = UDim2.fromOffset(0, 0) })
+	task.delay(CLOSE_T + 0.02, function()
 		if popup.Gui.Parent then popup.Gui:Destroy() end
 	end)
+end
+
+-- rebuild the open menu so it picks up a new colour scheme / accent / transparency
+function PlayerSelect:Retheme()
+	local popup = self._popup
+	if not popup then return end
+	local player = popup.Player
+	self:Close(true)
+	self:Open(player)
 end
 
 function PlayerSelect:IsOpen() return self._popup ~= nil end
@@ -448,7 +452,7 @@ function PlayerSelect:_refresh(quiet)
 		entry.Label.Text = on and entry.Action.Stop or entry.Action.Label
 		entry.Color = on and c.Accent or c.Field
 		entry.TextColor = on and c.OnAccent or c.Text
-		entry.Label.TextColor3, entry.Icon.TextColor3 = entry.TextColor, entry.TextColor
+		entry.Label.TextColor3 = entry.TextColor
 		if quiet then
 			entry.Row.BackgroundColor3 = entry.Color
 		else
